@@ -363,6 +363,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPadMsgScenario(
   return default_scenario_type_;
 }
 
+/* 
+   场景:  */
 ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
     const Frame& frame) {
   ScenarioConfig::ScenarioType scenario_type = default_scenario_type_;
@@ -404,17 +406,20 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
   if (traffic_sign_overlap) {
     switch (overlap_type) {
       case ReferenceLineInfo::STOP_SIGN:
+      // 选择是否返回STOP_SIGN_PROTECTED / STOP_SIGN_UNPROTECTED
         if (FLAGS_enable_scenario_stop_sign) {
           scenario_type = SelectStopSignScenario(frame, *traffic_sign_overlap);
         }
         break;
       case ReferenceLineInfo::SIGNAL:
+      // 选择是否返回TRAFFIC_LIGHT_PROTECTED / TRAFFIC_LIGHT_UNPROTECTED_LEFT_TURN / TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN
         if (FLAGS_enable_scenario_traffic_light) {
           scenario_type =
               SelectTrafficLightScenario(frame, *traffic_sign_overlap);
         }
         break;
       case ReferenceLineInfo::YIELD_SIGN:
+      // 选择是否返回YIELD_SIGN
         if (FLAGS_enable_scenario_yield_sign) {
           scenario_type = SelectYieldSignScenario(frame, *traffic_sign_overlap);
         }
@@ -424,6 +429,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
     }
   } else if (pnc_junction_overlap) {
     // bare intersection
+    // 选择是否返回BARE_INTERSECTION_UNPROTECTED
     if (FLAGS_enable_scenario_bare_intersection) {
       scenario_type =
           SelectBareIntersectionScenario(frame, *pnc_junction_overlap);
@@ -433,6 +439,10 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
   return scenario_type;
 }
 
+/* 决策是否进入STOP_SIGN_PROTECTED / STOP_SIGN_UNPROTECTED:
+   -> condition: 自车离stop sign距离在设定范围内
+   -> 在scenario为LANE_FOLLOW, PARK_AND_GO, PULL_OVER时, 直接切换到STOP_SIGN_UNPROTECTED (暂不用STOP_SIGN_PROTECTED)
+   -> 当前为其他scenario时, 不影响他们的运行 */
 ScenarioConfig::ScenarioType ScenarioManager::SelectStopSignScenario(
     const Frame& frame, const hdmap::PathOverlap& stop_sign_overlap) {
   const auto& scenario_config =
@@ -483,6 +493,10 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectStopSignScenario(
   return default_scenario_type_;
 }
 
+/* 决策是否进入TRAFFIC_LIGHT_PROTECTED / TRAFFIC_LIGHT_UNPROTECTED_LEFT_TURN / TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN:
+   -> condition: 自车离traffic light距离在设定范围内; 满足当前车道Turn Type与红绿灯&转向指示灯的组合关系
+   -> 在scenario为LANE_FOLLOW, PARK_AND_GO, PULL_OVER时, 根据组合关系, 切换到对应的Scenario
+   -> 当前为其他scenario时, 不影响他们的运行 */
 ScenarioConfig::ScenarioType ScenarioManager::SelectTrafficLightScenario(
     const Frame& frame, const hdmap::PathOverlap& traffic_light_overlap) {
   // some scenario may need start sooner than the others
@@ -548,6 +562,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectTrafficLightScenario(
         break;
       }
     }
+    // check if red light exist
     if (signal_color != perception::TrafficLight::GREEN) {
       red_light = true;
       break;
@@ -565,8 +580,10 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectTrafficLightScenario(
     const double adc_distance_to_traffic_light =
         traffic_light_overlap.start_s - adc_front_edge_s;
 
+
     if (right_turn && red_light) {
       // check TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN
+      // 当前处于右转车道, 且有红灯
       const auto& scenario_config =
           config_map_[ScenarioConfig::TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN]
               .traffic_light_unprotected_right_turn_config();
@@ -576,6 +593,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectTrafficLightScenario(
       }
     } else if (left_turn && !left_turn_signal) {
       // check TRAFFIC_LIGHT_UNPROTECTED_LEFT_TURN
+      // 当前处于左转车道, 没有左转指示灯
       const auto& scenario_config =
           config_map_[ScenarioConfig::TRAFFIC_LIGHT_UNPROTECTED_LEFT_TURN]
               .traffic_light_unprotected_left_turn_config();
@@ -585,6 +603,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectTrafficLightScenario(
       }
     } else {
       // check TRAFFIC_LIGHT_PROTECTED
+      // 当前处于直行车道(红灯/绿灯), 当前处于左转车道(红灯/绿灯, 有左转指示灯), 当前处于右转车道(绿灯)
       const auto& scenario_config =
           config_map_[ScenarioConfig::TRAFFIC_LIGHT_PROTECTED]
               .traffic_light_protected_config();
@@ -629,6 +648,10 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectTrafficLightScenario(
   return default_scenario_type_;
 }
 
+/* 决策是否进入YIELD_SIGN (减速让行):
+   -> condition: 自车离yield sign距离在设定范围内
+   -> 在scenario为LANE_FOLLOW, PARK_AND_GO, PULL_OVER时, 满足条件可以直接切换到YIELD_SIGN
+   -> 当前为其他scenario时, 不影响他们的运行 */
 ScenarioConfig::ScenarioType ScenarioManager::SelectYieldSignScenario(
     const Frame& frame, const hdmap::PathOverlap& yield_sign_overlap) {
   const auto& scenario_config =
@@ -677,9 +700,14 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectYieldSignScenario(
   return default_scenario_type_;
 }
 
+/* 决策是否进入BARE_INTERSECTION_SCENARIO:
+   -> condition: 在bare intersection没有路权(左右转/掉头), 并且自车离十字路口距离在设定范围内
+   -> 在scenario为LANE_FOLLOW, PARK_AND_GO, PULL_OVER时, 直接切换到BARE_INTERSECTION_UNPROTECTED
+   -> 当前为其他scenario时, 不影响他们的运行 */
 ScenarioConfig::ScenarioType ScenarioManager::SelectBareIntersectionScenario(
     const Frame& frame, const hdmap::PathOverlap& pnc_junction_overlap) {
   const auto& reference_line_info = frame.reference_line_info().front();
+  // 检查在bare intersection是否有路权, 如果有(直行), 直接返回Lane_Follow
   if (reference_line_info.GetIntersectionRightofWayStatus(
           pnc_junction_overlap)) {
     return default_scenario_type_;
@@ -774,6 +802,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectDeadEndScenario(
   return default_scenario_type_;
 }
 
+/* 返回ScenarioType为PARK_AND_GO
+   场景: 当自车当前静止且离destination有一定距离时, 如果当前不在车道上或者所处车道不是CITY_DRIVING, 返回ScenarioType为PARK_AND_GO */
 ScenarioConfig::ScenarioType ScenarioManager::SelectParkAndGoScenario(
     const Frame& frame) {
   bool park_and_go = false;

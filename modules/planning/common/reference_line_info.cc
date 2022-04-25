@@ -950,6 +950,8 @@ void ReferenceLineInfo::MakeEStopDecision(
   }
 }
 
+/* get lane turn type at given distance s:
+   NO_TURN, LEFT_TURN, RIGHT_TURN, U_TURN */
 hdmap::Lane::LaneTurn ReferenceLineInfo::GetPathTurnType(const double s) const {
   const double forward_buffer = 20.0;
   double route_s = 0.0;
@@ -972,6 +974,9 @@ hdmap::Lane::LaneTurn ReferenceLineInfo::GetPathTurnType(const double s) const {
   return hdmap::Lane::NO_TURN;
 }
 
+/* Get whether we have right of way at bare intersection (直行有, 转向没有):
+   -> Lane Turn Type == 直行: 有路权
+   -> Lane Turn Type == 左/右转/掉头: 没有路权 */
 bool ReferenceLineInfo::GetIntersectionRightofWayStatus(
     const hdmap::PathOverlap& pnc_junction_overlap) const {
   if (GetPathTurnType(pnc_junction_overlap.start_s) != hdmap::Lane::NO_TURN) {
