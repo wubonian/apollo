@@ -97,6 +97,7 @@ bool DeadEndTurnAroundScenario::GetScenarioConfig() {
   return true;
 }
 
+/* 基于dead_end_point与自车距离, 决定是否适合触发丁字路口掉头场景DeadEndScenario */
 bool DeadEndTurnAroundScenario::IsTransferable(
   const Frame& frame,
   const PointENU& dead_end_point,
@@ -118,14 +119,18 @@ bool DeadEndTurnAroundScenario::IsTransferable(
     ADEBUG << "Fail to get junctions from base_map.";
     return false;
   }
+
   if (junctions.size() <= 0) {
     ADEBUG << "No junction from map";
     return false;
   }
+
+  // 根据dead_end_point找出对应的dead_end十字路口
   if (!SelectTargetDeadEndJunction(&junctions, dead_end_point, &junction)) {
     ADEBUG << "Target Dead End not found";
     return false;
   }
+
   target_dead_end_id = junction->id().id();
   const auto& vehicle_state = frame.vehicle_state();
   const auto& nearby_path =
@@ -142,6 +147,7 @@ bool DeadEndTurnAroundScenario::IsTransferable(
   return true;
 }
 
+/* loop over all junctions, and find out the dead_end target_junction, which contains dead_end_point */
 bool DeadEndTurnAroundScenario::SelectTargetDeadEndJunction(
     std::vector<JunctionInfoConstPtr>* junctions,
     const apollo::common::PointENU& dead_end_point,
@@ -156,6 +162,7 @@ bool DeadEndTurnAroundScenario::SelectTargetDeadEndJunction(
     return false;
   }
   for (size_t i = 0; i < junction_num; ++i) {
+    // junction type == 5 is a dead end junction
     if (junctions->at(i)->junction().type() == 5) {
       Polygon2d polygon = junctions->at(i)->polygon();
       // judge dead end point in the select junction
@@ -173,6 +180,7 @@ bool DeadEndTurnAroundScenario::SelectTargetDeadEndJunction(
   return true;
 }
 
+/* 检查自车是否接近dead end十字路口 (基于给定阈值dead_end_start_range) */
 bool DeadEndTurnAroundScenario::CheckDistanceToDeadEnd(
     const VehicleState& vehicle_state,
     const Path& nearby_path,

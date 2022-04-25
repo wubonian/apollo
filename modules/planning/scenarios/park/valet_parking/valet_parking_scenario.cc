@@ -97,19 +97,16 @@ bool ValetParkingScenario::GetScenarioConfig() {
   return true;
 }
 
+/* 评估是否应该进入Valet Parking (true/false):
+   -> 在导航中找到对应的parking spot, 并且自车距离parking spot距离符合阈值 */
 bool ValetParkingScenario::IsTransferable(const Frame& frame,
                                           const double parking_start_range) {
   // TODO(all) Implement available parking spot detection by preception results
+  // 基于导航, 得到target parking spot id
   std::string target_parking_spot_id;
   if (frame.local_view().routing->routing_request().has_parking_info() &&
-      frame.local_view()
-          .routing->routing_request()
-          .parking_info()
-          .has_parking_space_id()) {
-    target_parking_spot_id = frame.local_view()
-                                 .routing->routing_request()
-                                 .parking_info()
-                                 .parking_space_id();
+      frame.local_view().routing->routing_request().parking_info().has_parking_space_id()) {
+    target_parking_spot_id = frame.local_view().routing->routing_request().parking_info().parking_space_id();
   } else {
     ADEBUG << "No parking space id from routing";
     return false;
@@ -124,6 +121,7 @@ bool ValetParkingScenario::IsTransferable(const Frame& frame,
   PathOverlap parking_space_overlap;
   const auto& vehicle_state = frame.vehicle_state();
 
+  // 基于target_parking_spot_id, 检查对应parking_space_overlap是否存在于nearby_path中
   if (!SearchTargetParkingSpotOnPath(nearby_path, target_parking_spot_id,
                                      &parking_space_overlap)) {
     ADEBUG << "No such parking spot found after searching all path forward "
@@ -132,6 +130,7 @@ bool ValetParkingScenario::IsTransferable(const Frame& frame,
     return false;
   }
 
+  // 检查自车当前据parking_space_overlap中心的距离是否满足给定触发阈值parking_start_range
   if (!CheckDistanceToParkingSpot(frame, vehicle_state, nearby_path,
                                   parking_start_range, parking_space_overlap)) {
     ADEBUG << "target parking spot found, but too far, distance larger than "
@@ -143,6 +142,7 @@ bool ValetParkingScenario::IsTransferable(const Frame& frame,
   return true;
 }
 
+/* 在nearby_path中, 搜索对应target_parking_id的parking_overlap, 并返回 */
 bool ValetParkingScenario::SearchTargetParkingSpotOnPath(
     const Path& nearby_path, const std::string& target_parking_id,
     PathOverlap* parking_space_overlap) {
@@ -156,6 +156,7 @@ bool ValetParkingScenario::SearchTargetParkingSpotOnPath(
   return false;
 }
 
+/* 检查自车到parking_space_center的s距离, 如果符合设定触发阈值, 则返回true */
 bool ValetParkingScenario::CheckDistanceToParkingSpot(
     const Frame& frame,
     const VehicleState& vehicle_state, const Path& nearby_path,

@@ -204,6 +204,8 @@ void ScenarioManager::RegisterScenarios() {
       &config_map_[ScenarioConfig::DEADEND_TURNAROUND]));
 }
 
+/* 返回靠边停车Scenario: PULL_OVER (仅在LANE_FOLLOW时允许产生PULL_OVER)
+   仅在接近导航终点, 且右侧车道为非CITY_DRIVING时, 允许Pull_Over */
 ScenarioConfig::ScenarioType ScenarioManager::SelectPullOverScenario(
     const Frame& frame) {
   const auto& scenario_config =
@@ -223,6 +225,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPullOverScenario(
          << "] destination_s[" << dest_sl.s() << "] adc_front_edge_s["
          << adc_front_edge_s << "]";
 
+  // 仅在没有进行变道, 且距离导航终点较近时, 允许触发pull over
   bool pull_over_scenario =
       (frame.reference_line_info().size() == 1 &&  // NO, while changing lane
        adc_distance_to_dest >=
@@ -231,6 +234,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPullOverScenario(
            scenario_config.start_pull_over_scenario_distance());
 
   // too close to destination + not found pull-over position
+  // 如果距离终点过近, 并且没有找到pull over positionn, 不允许进行pull over
+  // pull_over_scenario = false
   if (pull_over_scenario) {
     const auto& pull_over_status =
         injector_->planning_context()->planning_status().pull_over();
@@ -241,6 +246,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPullOverScenario(
   }
 
   // check around junction
+  // 如果发现终点在十字路口附近(十字路口前8m 或者 十字路口后8m内), 则不允许pull-over
+  // pull_over_scenario = false
   if (pull_over_scenario) {
     static constexpr double kDistanceToAvoidJunction = 8.0;  // meter
     for (const auto& overlap : first_encountered_overlap_map_) {
@@ -261,6 +268,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPullOverScenario(
   }
 
   // check rightmost driving lane along pull-over path
+  // 从自车当前位置向前5m间隔搜索, 如果发现其中出现右侧lane type为CITY_DRIVING时, 禁止pull-over
+  // pull_over_scenario = false
   if (pull_over_scenario) {
     double check_s = adc_front_edge_s;
     static constexpr double kDistanceUnit = 5.0;
@@ -335,6 +344,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPullOverScenario(
   return default_scenario_type_;
 }
 
+/* 返回驾驶员Pad操作Scenario:
+   EMERGENCY_PULL_OVER, EMERGENCY_STOP, PARK_AND_GO(恢复从这里开始) */
 ScenarioConfig::ScenarioType ScenarioManager::SelectPadMsgScenario(
     const Frame& frame) {
   const auto& pad_msg_driving_action = frame.GetPadMsgDrivingAction();
@@ -363,8 +374,14 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectPadMsgScenario(
   return default_scenario_type_;
 }
 
-/* 
-   场景:  */
+/* 返回路口对应的ScenarioType
+   -> 路口有stop sign: STOP_SIGN_PROTECTED (当前只使用) / STOP_SIGN_UNPROTECTED
+   -> 路口有traffic light
+      -> TRAFFIC_LIGHT_PROTECTED
+      -> TRAFFIC_LIGHT_UNPROTECTED_LEFT_TURN (处于左转车道&没有左转灯)
+      -> TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN (处于右转车道&红灯)
+   -> 路口有yield sign: YIELD_SIGN
+   -> 路口没有交通标识, 且当前车道没有路权: BARE_INTERSECTION_UNPROTECTED */
 ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
     const Frame& frame) {
   ScenarioConfig::ScenarioType scenario_type = default_scenario_type_;
@@ -390,6 +407,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
   }
 
   // pick a closer one between consecutive bare_intersection and traffic_sign
+  // 如果traffic sign与pnc junction相距超过10m, 只保留近的那一个
+  // 如果相距小于10m, 则认为两者属于同一intersection, 都将保留
   if (traffic_sign_overlap && pnc_junction_overlap) {
     static constexpr double kJunctionDelta = 10.0;
     double s_diff = std::fabs(traffic_sign_overlap->start_s -
@@ -403,6 +422,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectInterceptionScenario(
     }
   }
 
+  // 有traffic sign的时候, 优先基于traffic sign进行场景选择
+  // 如果没有任何traffic sign, 则认为属于bare intersection, 使用pnc_junction来进行触发
   if (traffic_sign_overlap) {
     switch (overlap_type) {
       case ReferenceLineInfo::STOP_SIGN:
@@ -759,6 +780,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectBareIntersectionScenario(
   return default_scenario_type_;
 }
 
+/* 决策是否进入VALET_PARKING (AVP停车, 在当前所有scenario下均可以进入): 
+   基于导航找到目标park spot, 并且自车距离目标停车场满足设定阈值 */
 ScenarioConfig::ScenarioType ScenarioManager::SelectValetParkingScenario(
     const Frame& frame) {
   const auto& scenario_config =
@@ -775,6 +798,8 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectValetParkingScenario(
   return default_scenario_type_;
 }
 
+/* 决策是否进入DEADEND_TURNAROUND (丁字路口掉头, 当前所有scenario均可进入):
+   检查自车距离当前routing request的dead_end_point的距离, 如果接近就进入该场景 */
 ScenarioConfig::ScenarioType ScenarioManager::SelectDeadEndScenario(
     const Frame& frame) {
   size_t waypoint_num =
@@ -793,6 +818,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectDeadEndScenario(
     config_map_[ScenarioConfig::DEADEND_TURNAROUND].deadend_turnaround_config();
   double dead_end_start_range =
       scenario_config.dead_end_start_range();
+  
   if (scenario::deadend_turnaround::DeadEndTurnAroundScenario::IsTransferable(
           frame, dead_end_point_, dead_end_start_range) &&
           routing_type == routing::ROUTING_IN) {
@@ -802,7 +828,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectDeadEndScenario(
   return default_scenario_type_;
 }
 
-/* 返回ScenarioType为PARK_AND_GO
+/* 返回ScenarioType为PARK_AND_GO (可以在所有场景下进入)
    场景: 当自车当前静止且离destination有一定距离时, 如果当前不在车道上或者所处车道不是CITY_DRIVING, 返回ScenarioType为PARK_AND_GO */
 ScenarioConfig::ScenarioType ScenarioManager::SelectParkAndGoScenario(
     const Frame& frame) {
@@ -852,6 +878,7 @@ ScenarioConfig::ScenarioType ScenarioManager::SelectParkAndGoScenario(
   return default_scenario_type_;
 }
 
+/* 基于当前状态, 将intersection信息更新到first_encountered_overlap_map_ */
 void ScenarioManager::Observe(const Frame& frame) {
   // init first_encountered_overlap_map_
   first_encountered_overlap_map_.clear();
@@ -868,16 +895,19 @@ void ScenarioManager::Observe(const Frame& frame) {
   }
 }
 
+/* 执行ScenarioManager状态机更新 */
 void ScenarioManager::Update(const common::TrajectoryPoint& ego_point,
                              const Frame& frame) {
   ACHECK(!frame.reference_line_info().empty());
 
+  // 将intersection信息更新到first_encountered_overlap_map_
   Observe(frame);
 
+  // 执行scenario的状态机, 并在进入/退出scenario时更新PlanningContext对应的信息
   ScenarioDispatch(frame);
 }
 
-
+/* 执行scenario的状态机, 并在进入/退出scenario时更新PlanningContext对应的信息 */
 void ScenarioManager::ScenarioDispatch(const Frame& frame) {
   ACHECK(!frame.reference_line_info().empty());
   ScenarioConfig::ScenarioType scenario_type;
@@ -889,11 +919,15 @@ void ScenarioManager::ScenarioDispatch(const Frame& frame) {
                                   ->GetLatestLearningDataFrame()
                                   ->adc_trajectory_point_size();
   }
+  
+  // generate target scenario type by End2End learning
   if ((planning_config_.learning_mode() == PlanningConfig::E2E ||
        planning_config_.learning_mode() == PlanningConfig::E2E_TEST) &&
       history_points_len >= FLAGS_min_past_history_points_len) {
     scenario_type = ScenarioDispatchLearning();
-  } else {
+  }
+  // 基于规则的ScenarioManager状态机实现, 生成目标scenario_type
+  else {
     scenario_type = ScenarioDispatchNonLearning(frame);
   }
 
@@ -901,13 +935,16 @@ void ScenarioManager::ScenarioDispatch(const Frame& frame) {
          << ScenarioConfig::ScenarioType_Name(scenario_type);
 
   // update PlanningContext
+  // 在进入/离开每个scenario的时候, 对其在planning context中的信息进行更新/清除
   UpdatePlanningContext(frame, scenario_type);
 
+  // 将current_scenario_切换到scenario_type
   if (current_scenario_->scenario_type() != scenario_type) {
     current_scenario_ = CreateScenario(scenario_type);
   }
 }
 
+/* 使用深度学习生成Scenario Type */
 ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchLearning() {
   ////////////////////////////////////////
   // learning model scenario
@@ -916,6 +953,7 @@ ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchLearning() {
   return scenario_type;
 }
 
+/* 检查自车是否达到目标点附近 */
 bool ScenarioManager::JudgeReachTargetPoint(
   const common::VehicleState& car_position,
   const common::PointENU& target_point) {
@@ -927,6 +965,7 @@ bool ScenarioManager::JudgeReachTargetPoint(
   return distance_to_vehicle < FLAGS_threshold_distance_for_destination;
 }
 
+/* 实现scenario manager state machine, 调用SelectXXXScenario()函数, 决定不同Scenario间的状态转移 */
 ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchNonLearning(
     const Frame& frame) {
   ////////////////////////////////////////
@@ -934,6 +973,7 @@ ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchNonLearning(
   ScenarioConfig::ScenarioType scenario_type = default_scenario_type_;
   ////////////////////////////////////////
   // Pad Msg scenario
+  // 手动触发场景 PARK_AND_GO, EMERGENCY_STOP, EMERGENCY_PULL_OVER
   scenario_type = SelectPadMsgScenario(frame);
 
   const auto vehicle_state_provider = injector_->vehicle_state();
@@ -975,6 +1015,8 @@ ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchNonLearning(
   }
   ////////////////////////////////////////
   // ParkAndGo / starting scenario
+  // scenario: PARK_AND_GO (可以在所有场景下进入)
+  
   if (scenario_type == default_scenario_type_) {
     if (FLAGS_enable_scenario_park_and_go && !reach_target_pose_) {
       scenario_type = SelectParkAndGoScenario(frame);
@@ -982,13 +1024,23 @@ ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchNonLearning(
   }
 
   ////////////////////////////////////////
-  // intersection scenarios
+  /* intersection scenarios:
+     -> 路口有stop sign: STOP_SIGN_PROTECTED (当前只使用) / STOP_SIGN_UNPROTECTED
+     -> 路口有traffic light
+        -> TRAFFIC_LIGHT_PROTECTED
+        -> TRAFFIC_LIGHT_UNPROTECTED_LEFT_TURN (处于左转车道&没有左转灯)
+        -> TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN (处于右转车道&红灯)
+     -> 路口有yield sign: YIELD_SIGN
+     -> 路口没有交通标识, 且当前车道没有路权: BARE_INTERSECTION_UNPROTECTED */
+  /* 该条件仅在current_scenario_为LANE_FOLLOW, PARK_AND_GO, PULL_OVER时起作用 */
   if (scenario_type == default_scenario_type_) {
     scenario_type = SelectInterceptionScenario(frame);
   }
 
   ////////////////////////////////////////
-  // pull-over scenario
+  /* pull-over scenario: PULL_OVER
+     仅在接近导航终点, 并且右侧车道为非CITY_DRIVING时触发 */
+  /* 该条件仅在current_scenario_为LANE_FOLLOW时起作用 */
   if (scenario_type == default_scenario_type_) {
     if (FLAGS_enable_scenario_pull_over) {
       scenario_type = SelectPullOverScenario(frame);
@@ -997,11 +1049,14 @@ ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchNonLearning(
 
   ////////////////////////////////////////
   // VALET_PARKING scenario
+  /* 当接近导航parking spot时触发, 可以在所有scenario下进入 */
   if (scenario_type == default_scenario_type_) {
     scenario_type = SelectValetParkingScenario(frame);
   }
+
   ////////////////////////////////////////
   // dead end
+  /* 当接近导航的dead end point时, 触发丁字路口掉头场景DEADEND_TURNAROUND, 可以在所有scenario下进入 */
   if (scenario_type == default_scenario_type_) {
     scenario_type = SelectDeadEndScenario(frame);
   }
@@ -1009,17 +1064,20 @@ ScenarioConfig::ScenarioType ScenarioManager::ScenarioDispatchNonLearning(
   return scenario_type;
 }
 
+/* check if target scenario is bare intersection scenario */
 bool ScenarioManager::IsBareIntersectionScenario(
     const ScenarioConfig::ScenarioType& scenario_type) {
   return (scenario_type == ScenarioConfig::BARE_INTERSECTION_UNPROTECTED);
 }
 
+/* check if target scenario is stop sign scenario */
 bool ScenarioManager::IsStopSignScenario(
     const ScenarioConfig::ScenarioType& scenario_type) {
   return (scenario_type == ScenarioConfig::STOP_SIGN_PROTECTED ||
           scenario_type == ScenarioConfig::STOP_SIGN_UNPROTECTED);
 }
 
+/* check if target scenario is traffic light scenario */
 bool ScenarioManager::IsTrafficLightScenario(
     const ScenarioConfig::ScenarioType& scenario_type) {
   return (
@@ -1028,11 +1086,13 @@ bool ScenarioManager::IsTrafficLightScenario(
       scenario_type == ScenarioConfig::TRAFFIC_LIGHT_UNPROTECTED_RIGHT_TURN);
 }
 
+/* check if target scenario is yield sign scenario */
 bool ScenarioManager::IsYieldSignScenario(
     const ScenarioConfig::ScenarioType& scenario_type) {
   return (scenario_type == ScenarioConfig::YIELD_SIGN);
 }
 
+/* 在每个scenario进入/退出前, 更新其在PlanningContext中对应的信息 */
 void ScenarioManager::UpdatePlanningContext(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
   // BareIntersection scenario
@@ -1055,27 +1115,31 @@ void ScenarioManager::UpdatePlanningContext(
 }
 
 // update: bare_intersection status in PlanningContext
+/* 在进入Bare Intersection前, 设置对应的pnc_junction_overlap_id
+   在离开Bare Intersection前, 清除planning context中该scenario对应的信息 */
 void ScenarioManager::UpdatePlanningContextBareIntersectionScenario(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
   auto* bare_intersection = injector_->planning_context()
                                 ->mutable_planning_status()
                                 ->mutable_bare_intersection();
 
+  // 在离开Bare Intersection场景前, 在Planning Context中, 清除该scenario对应的local数据
   if (!IsBareIntersectionScenario(scenario_type)) {
     bare_intersection->Clear();
     return;
   }
 
+  // 如果当前已经处于bare intersection, 不处理
   if (scenario_type == current_scenario_->scenario_type()) {
     return;
   }
 
   // set to first_encountered pnc_junction
-  const auto map_itr =
-      first_encountered_overlap_map_.find(ReferenceLineInfo::PNC_JUNCTION);
-  if (map_itr != first_encountered_overlap_map_.end()) {
-    bare_intersection->set_current_pnc_junction_overlap_id(
-        map_itr->second.object_id);
+  // 在进入Bare Intersection前, 在对应planning context中设置对应的pnc_junction_overlap_id
+  const auto map_itr = first_encountered_overlap_map_.find(ReferenceLineInfo::PNC_JUNCTION);
+  if (map_itr != first_encountered_overlap_map_.end())
+  {
+    bare_intersection->set_current_pnc_junction_overlap_id(map_itr->second.object_id);
     ADEBUG << "Update PlanningContext with first_encountered pnc_junction["
            << map_itr->second.object_id << "] start_s["
            << map_itr->second.start_s << "]";
@@ -1083,19 +1147,25 @@ void ScenarioManager::UpdatePlanningContextBareIntersectionScenario(
 }
 
 // update: emergency_stop status in PlanningContext
+/* 在离开Emergency Stop前, 清楚planning context中该scenario对应的信息 */
 void ScenarioManager::UpdatePlanningContextEmergencyStopcenario(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
   auto* emergency_stop = injector_->planning_context()
                              ->mutable_planning_status()
                              ->mutable_emergency_stop();
+  
+  // 在离开Emergency Stop前, 清除planning context中该scenario对应的信息
   if (scenario_type != ScenarioConfig::EMERGENCY_STOP) {
     emergency_stop->Clear();
   }
 }
 
 // update: stop_sign status in PlanningContext
+/* 在进入Stop Sign前, 设置对应的stop_sign_overlap_id
+   在离开Stop Sign前, 清除planning context中该scenario对应的信息 */
 void ScenarioManager::UpdatePlanningContextStopSignScenario(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
+  // 在离开Stop Sign场景时, 清除planning context中该scenario对应的信息
   if (!IsStopSignScenario(scenario_type)) {
     injector_->planning_context()
         ->mutable_planning_status()
@@ -1109,6 +1179,7 @@ void ScenarioManager::UpdatePlanningContextStopSignScenario(
   }
 
   // set to first_encountered stop_sign
+  // 在进入Stop Sign场景前, 在对应planning context中设置对应的stop_sign_overlap_id
   const auto map_itr =
       first_encountered_overlap_map_.find(ReferenceLineInfo::STOP_SIGN);
   if (map_itr != first_encountered_overlap_map_.end()) {
@@ -1123,8 +1194,11 @@ void ScenarioManager::UpdatePlanningContextStopSignScenario(
 }
 
 // update: traffic_light(s) status in PlanningContext
+/* 在进入Traffic Light前, 增加对应的traffic_light_overlap_id
+   在离开Traffic Light前, 清除planning context中该scenario对应的信息 */
 void ScenarioManager::UpdatePlanningContextTrafficLightScenario(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
+  // 在离开Traffic Light场景前, 清除planning context中该scenario对应的信息
   if (!IsTrafficLightScenario(scenario_type)) {
     injector_->planning_context()
         ->mutable_planning_status()
@@ -1138,6 +1212,7 @@ void ScenarioManager::UpdatePlanningContextTrafficLightScenario(
   }
 
   // get first_encountered traffic_light
+  // 在进入Traffic Light场景前, 在planning context中设置对应的traffic_light_overlap_id
   std::string current_traffic_light_overlap_id;
   const auto map_itr =
       first_encountered_overlap_map_.find(ReferenceLineInfo::SIGNAL);
@@ -1190,6 +1265,8 @@ void ScenarioManager::UpdatePlanningContextTrafficLightScenario(
 }
 
 // update: yield_sign status in PlanningContext
+/* 在进入Yield Sign前, 增加对应的traffic_light_overlap_id
+   在离开Yield Sign前, 清除planning context中该scenario对应的信息 */
 void ScenarioManager::UpdatePlanningContextYieldSignScenario(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
   if (!IsYieldSignScenario(scenario_type)) {
@@ -1256,6 +1333,9 @@ void ScenarioManager::UpdatePlanningContextYieldSignScenario(
 }
 
 // update: pull_over status in PlanningContext
+/* 更新(Emergency) Pull Over两个场景
+   -> 在整个Pull Over过程中, 设置Pull Over是否Emergency
+   -> 在离开(Emergency) Pull Over时, 如果靠边停车位置是否距离终点较远, 清除PlanningContext中Pull Over的信息 */
 void ScenarioManager::UpdatePlanningContextPullOverScenario(
     const Frame& frame, const ScenarioConfig::ScenarioType& scenario_type) {
   auto* pull_over = injector_->planning_context()
