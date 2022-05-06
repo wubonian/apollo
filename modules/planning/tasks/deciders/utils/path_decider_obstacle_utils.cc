@@ -25,6 +25,7 @@
 namespace apollo {
 namespace planning {
 
+/* 检查障碍物是否为静止障碍物 */
 bool IsWithinPathDeciderScopeObstacle(const Obstacle& obstacle) {
   // Obstacle should be non-virtual.
   if (obstacle.IsVirtual()) {

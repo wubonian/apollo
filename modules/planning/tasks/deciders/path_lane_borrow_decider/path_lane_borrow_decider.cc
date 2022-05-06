@@ -37,6 +37,10 @@ PathLaneBorrowDecider::PathLaneBorrowDecider(
     const std::shared_ptr<DependencyInjector>& injector)
     : Decider(config, injector) {}
 
+/* 自车低速时静态障碍物的借道避让决策
+   -> 静态障碍物为ParkedVehicle 或 没有前车遮挡的障碍物
+   -> 左边 或 右边Lane Boundary不为实线
+   -> 自车速度低于5m/s */
 Status PathLaneBorrowDecider::Process(
     Frame* const frame, ReferenceLineInfo* const reference_line_info) {
   // Sanity checks.
@@ -44,6 +48,7 @@ Status PathLaneBorrowDecider::Process(
   CHECK_NOTNULL(reference_line_info);
 
   // skip path_lane_borrow_decider if reused path
+  // FLAGS_enable_skip_path_tasks is set to false by default
   if (FLAGS_enable_skip_path_tasks && reference_line_info->path_reusable()) {
     // for debug
     AINFO << "skip due to reusing path";
@@ -53,6 +58,7 @@ Status PathLaneBorrowDecider::Process(
   // By default, don't borrow any lane.
   reference_line_info->set_is_path_lane_borrow(false);
   // Check if lane-borrowing is needed, if so, borrow lane.
+  // allow_lane_borrowing is set to true by default
   if (Decider::config_.path_lane_borrow_decider_config()
           .allow_lane_borrowing() &&
       IsNecessaryToBorrowLane(*frame, *reference_line_info)) {
@@ -61,6 +67,14 @@ Status PathLaneBorrowDecider::Process(
   return Status::OK();
 }
 
+/* 检查是否需要触发借道超车 (LaneBorrow):
+   -> 满足Lane Borrow条件触发:
+      -> 不在router规划的Lane Change场景
+      -> 自车速度小于5m/s
+      -> blocking obstacle不在十字路口与终点附近
+      -> blocking obstacle为parked vehicle或者没有前车遮挡的静止车辆
+      -> 前向搜索Lane Boundary Type不为实线
+   -> 如果able_to_use_self_lane_counter > 6则退出 */
 bool PathLaneBorrowDecider::IsNecessaryToBorrowLane(
     const Frame& frame, const ReferenceLineInfo& reference_line_info) {
   auto* mutable_path_decider_status = injector_->planning_context()
@@ -80,6 +94,7 @@ bool PathLaneBorrowDecider::IsNecessaryToBorrowLane(
     ADEBUG << "Blocking obstacle ID["
            << mutable_path_decider_status->front_static_obstacle_id() << "]";
     // ADC requirements check for lane-borrowing:
+    // 仅允许在只有一条reference line的条件下触发lane borrowing (对应非router触发的lane change场景)
     if (!HasSingleReferenceLine(frame)) {
       return false;
     }
@@ -138,10 +153,12 @@ bool PathLaneBorrowDecider::HasSingleReferenceLine(const Frame& frame) {
   return frame.reference_line_info().size() == 1;
 }
 
+// 检查lane borrow的速度范围 ( spd < 5m/s)
 bool PathLaneBorrowDecider::IsWithinSidePassingSpeedADC(const Frame& frame) {
   return frame.PlanningStartPoint().v() < FLAGS_lane_borrow_max_speed;
 }
 
+/* 静态obstacle存在周期超过设定阈值: 3cycle */
 bool PathLaneBorrowDecider::IsLongTermBlockingObstacle() {
   if (injector_->planning_context()
           ->planning_status()
@@ -156,6 +173,7 @@ bool PathLaneBorrowDecider::IsLongTermBlockingObstacle() {
   }
 }
 
+/* 静态obstacle原理destination */
 bool PathLaneBorrowDecider::IsBlockingObstacleWithinDestination(
     const ReferenceLineInfo& reference_line_info) {
   const auto& path_decider_status =
@@ -188,6 +206,7 @@ bool PathLaneBorrowDecider::IsBlockingObstacleWithinDestination(
   return true;
 }
 
+/* 检查静态blocking obstacle是否在远离Intersection (设定距离阈值) */
 bool PathLaneBorrowDecider::IsBlockingObstacleFarFromIntersection(
     const ReferenceLineInfo& reference_line_info) {
   const auto& path_decider_status =
@@ -243,6 +262,9 @@ bool PathLaneBorrowDecider::IsBlockingObstacleFarFromIntersection(
   return true;
 }
 
+/* 检查obstacle是否SidePassable
+   -> 与自车距离<35m
+   -> obstacle位于parking-lane 或者 前方没有遮挡的障碍物 */
 bool PathLaneBorrowDecider::IsSidePassableObstacle(
     const ReferenceLineInfo& reference_line_info) {
   const auto& path_decider_status =
@@ -264,6 +286,7 @@ bool PathLaneBorrowDecider::IsSidePassableObstacle(
   return IsNonmovableObstacle(reference_line_info, *blocking_obstacle);
 }
 
+/* 从自车当前位置, 按照2m的间距, 前向搜索100m, 检查左右两侧Lane Boundary Type, 检查是否为实线不可借道 */
 void PathLaneBorrowDecider::CheckLaneBorrow(
     const ReferenceLineInfo& reference_line_info,
     bool* left_neighbor_lane_borrowable, bool* right_neighbor_lane_borrowable) {
@@ -276,6 +299,8 @@ void PathLaneBorrowDecider::CheckLaneBorrow(
   double check_s = reference_line_info.AdcSlBoundary().end_s();
   const double lookforward_distance =
       std::min(check_s + kLookforwardDistance, reference_line.Length());
+  
+  // 从自车当前位置, 按照2m的间距, 前向搜索100m, 检查左右两侧Lane Boundary Type, 检查是否为实线不可借道
   while (check_s < lookforward_distance) {
     auto ref_point = reference_line.GetNearestReferencePoint(check_s);
     if (ref_point.lane_waypoints().empty()) {

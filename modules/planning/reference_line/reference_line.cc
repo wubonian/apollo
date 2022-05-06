@@ -234,6 +234,7 @@ ReferenceLine::ToFrenetFrame(const common::TrajectoryPoint& traj_point) const {
   return std::make_pair(s_condition, l_condition);
 }
 
+// 返回离s最近的ReferencePoint
 ReferencePoint ReferenceLine::GetNearestReferencePoint(const double s) const {
   const auto& accumulated_s = map_path_.accumulated_s();
   if (s < accumulated_s.front() - 1e-2) {

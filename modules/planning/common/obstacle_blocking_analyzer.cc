@@ -35,6 +35,9 @@ using apollo::hdmap::HDMapUtil;
 constexpr double kAdcDistanceThreshold = 35.0;  // unit: m
 constexpr double kObstaclesDistanceThreshold = 15.0;
 
+/* 检查输入obstacle是否不可移动, 同时满足以下条件返回true
+   -> 该obstacle与自车距离 < 35m
+   -> 该obstacle是一个Parked Vehicle 或者 该obstacle没有被其他obstacle遮挡 */
 bool IsNonmovableObstacle(const ReferenceLineInfo& reference_line_info,
                           const Obstacle& obstacle) {
   // Obstacle is far away.
@@ -46,12 +49,14 @@ bool IsNonmovableObstacle(const ReferenceLineInfo& reference_line_info,
   }
 
   // Obstacle is parked obstacle.
+  // 如果该obstacle是一个Parked Vehicle, 则返回True
   if (IsParkedVehicle(reference_line_info.reference_line(), &obstacle)) {
     ADEBUG << "It is Parked and NON-MOVABLE.";
     return true;
   }
 
   // Obstacle is blocked by others too.
+  // 如果obstacle被其他obstacle遮挡, 则返回false
   for (const auto* other_obstacle :
        reference_line_info.path_decision().obstacles().Items()) {
     if (other_obstacle->Id() == obstacle.Id()) {
@@ -67,6 +72,7 @@ bool IsNonmovableObstacle(const ReferenceLineInfo& reference_line_info,
       // not blocking the backside vehicle
       continue;
     }
+    // 其他的obstacle与该obstacle横向位置重叠
     double delta_s = other_obstacle->PerceptionSLBoundary().start_s() -
                      obstacle.PerceptionSLBoundary().end_s();
     if (delta_s < 0.0 || delta_s > kObstaclesDistanceThreshold) {
@@ -198,6 +204,7 @@ bool IsBlockingDrivingPathObstacle(const ReferenceLine& reference_line,
   return true;
 }
 
+/* 如果输入的obstacle是静止的, 并且位于ParkingLane 或者 位于右侧road edge以外, 则返回IsParkedVehicle为true */
 bool IsParkedVehicle(const ReferenceLine& reference_line,
                      const Obstacle* obstacle) {
   if (!FLAGS_enable_scenario_side_pass_multiple_parked_obstacles) {
@@ -212,6 +219,8 @@ bool IsParkedVehicle(const ReferenceLine& reference_line,
   reference_line.GetRoadWidth(obstacle->PerceptionSLBoundary().end_s(),
                               &road_left_width, &road_right_width);
   max_road_right_width = std::max(max_road_right_width, road_right_width);
+
+  // check if given obstacle's left edge is beyond right road edge
   bool is_at_road_edge = std::abs(obstacle->PerceptionSLBoundary().start_l()) >
                          max_road_right_width - 0.1;
 
@@ -222,6 +231,7 @@ bool IsParkedVehicle(const ReferenceLine& reference_line,
                                              obstacle_box.center().y()),
       std::min(obstacle_box.width(), obstacle_box.length()), &lanes);
   bool is_on_parking_lane = false;
+  // check if given obstacle is located on a parking lane
   if (lanes.size() == 1 &&
       lanes.front()->lane().type() == apollo::hdmap::Lane::PARKING) {
     is_on_parking_lane = true;

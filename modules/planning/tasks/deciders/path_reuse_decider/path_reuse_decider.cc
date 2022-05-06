@@ -43,12 +43,26 @@ PathReuseDecider::PathReuseDecider(
     const std::shared_ptr<DependencyInjector>& injector)
     : Decider(config, injector) {}
 
+/* 决策是否允许reuse上一周期规划的横向轨迹 (基于该横向轨迹在本周期重新做速度规划)
+   -> 默认禁止该功能, 且仅允许在LANE_FOLLOW scenario使用 */
 Status PathReuseDecider::Process(Frame* const frame,
                                  ReferenceLineInfo* const reference_line_info) {
+  /* 决策是否允许reuse上一周期规划的横向轨迹 (基于该横向轨迹在本周期重新做速度规划):
+   -> Config项
+      -> 根据config是否允许该功能 (默认禁止)
+      -> 仅在LANE_FOLLOW scenario下允许该功能
+      -> 根据config仅在变道时允许, 或者在正常情况也允许
+   -> 在满足以下条件时允许复用:
+      -> 没有静态障碍物/静态障碍物time-gap>3s, 并且横向轨迹与静态障碍物没有碰撞
+      -> 基于当前自车位置裁剪历史轨迹成功 (剩余Path Point Num > 60)
+      -> 上一周期速度规划成功
+      -> 没有做重规划 */
+  
   // Sanity checks.
   CHECK_NOTNULL(frame);
   CHECK_NOTNULL(reference_line_info);
 
+  // currently, reuse_path parameter is configured as false, by default
   if (!Decider::config_.path_reuse_decider_config().reuse_path()) {
     ADEBUG << "skipping reusing path: conf";
     reference_line_info->set_path_reusable(false);
@@ -60,6 +74,7 @@ Status PathReuseDecider::Process(Frame* const frame,
                                  ->planning_status()
                                  .scenario()
                                  .scenario_type();
+  // 只在LANE_FOLLOW场景下允许使用path_reuse feature
   if (scenario_type != ScenarioConfig::LANE_FOLLOW) {
     ADEBUG << "skipping reusing path: not in LANE_FOLLOW scenario";
     reference_line_info->set_path_reusable(false);
@@ -73,6 +88,7 @@ Status PathReuseDecider::Process(Frame* const frame,
   ADEBUG << "lane change status: " << lane_change_status->ShortDebugString();
 
   // skip path reuse if not in_change_lane
+  // enable flag is default true, this config inhibits this setting
   if (lane_change_status->status() != ChangeLaneStatus::IN_CHANGE_LANE &&
       !FLAGS_enable_reuse_path_in_lane_follow) {
     ADEBUG << "skipping reusing path: not in lane_change";
@@ -123,7 +139,13 @@ Status PathReuseDecider::Process(Frame* const frame,
   //                                          ->reference_line_info()
   //                                          .front()
   //                                          .trajectory_type();
-  if (path_reusable_) {
+  if (path_reusable_) 
+  // 判断是否可以继续复用横向轨迹
+  // 1. 没有进行replan()
+  // 2. 上一周期速度规划正常
+  // 3. 该横向轨迹与静态障碍物无碰撞风险
+  // 4. 基于自车位置裁剪得到的横向轨迹长度ok
+  {
     if (!frame->current_frame_planned_trajectory().is_replan() &&
         speed_optimization_successful && IsCollisionFree(reference_line_info) &&
         TrimHistoryPath(frame, reference_line_info)) {
@@ -134,7 +156,14 @@ Status PathReuseDecider::Process(Frame* const frame,
       ADEBUG << "stop reuse path";
       path_reusable_ = false;
     }
-  } else {
+  } 
+  else
+  // 判断是否可以开启复用横向轨迹
+  // 1. 前方没有静态障碍物 或 静态障碍物time-gap > 3s
+  // 2. 上一周期速度规划正常
+  // 3. 该横向轨迹与静态障碍物无碰撞风险
+  // 4. 基于自车位置裁剪得到的横向轨迹长度ok
+  {
     // F -> T
     auto* mutable_path_decider_status = injector_->planning_context()
                                             ->mutable_planning_status()
@@ -147,7 +176,7 @@ Status PathReuseDecider::Process(Frame* const frame,
         IsIgnoredBlockingObstacle(reference_line_info);
     ADEBUG << "counter[" << front_static_obstacle_cycle_counter
            << "] IsIgnoredBlockingObstacle[" << ignore_blocking_obstacle << "]";
-    // stop reusing current path:
+    // start reusing current path:
     // 1. blocking obstacle disappeared or moving far away
     // 2. trimming successful
     // 3. no statical obstacle collision.
@@ -168,12 +197,14 @@ Status PathReuseDecider::Process(Frame* const frame,
   return Status::OK();
 }
 
+/* 检查blocking obstacle是否可以不用考虑 (自车与该obstacle的time-gap大于3s) */
 bool PathReuseDecider::IsIgnoredBlockingObstacle(
     ReferenceLineInfo* const reference_line_info) {
   const ReferenceLine& reference_line = reference_line_info->reference_line();
   static constexpr double kSDistBuffer = 30.0;  // meter
   static constexpr int kTimeBuffer = 3;         // second
   // vehicle speed
+  // s_buffer with respect to time-gap = 3s
   double adc_speed = injector_->vehicle_state()->linear_velocity();
   double final_s_buffer = std::max(kSDistBuffer, kTimeBuffer * adc_speed);
   // current vehicle s position
@@ -181,6 +212,7 @@ bool PathReuseDecider::IsIgnoredBlockingObstacle(
   GetADCSLPoint(reference_line, &adc_position_sl);
   // blocking obstacle start s
   double blocking_obstacle_start_s;
+  // 检查PlanningContext.PathDecider.front_static_obstacle_id对应的静态障碍物与自车的time-gap是否大于3s
   if (GetBlockingObstacleS(reference_line_info, &blocking_obstacle_start_s) &&
       // distance to blocking obstacle
       (blocking_obstacle_start_s - adc_position_sl.s() > final_s_buffer)) {
@@ -192,6 +224,8 @@ bool PathReuseDecider::IsIgnoredBlockingObstacle(
   }
 }
 
+/* 计算blocking_obstacle在当前reference_line_info上的s distance:
+   -> 对应PlanningContext.PathDecider.front_static_obstacle_id */
 bool PathReuseDecider::GetBlockingObstacleS(
     ReferenceLineInfo* const reference_line_info, double* blocking_obstacle_s) {
   auto* mutable_path_decider_status = injector_->planning_context()
@@ -214,6 +248,7 @@ bool PathReuseDecider::GetBlockingObstacleS(
   return true;
 }
 
+/* 计算自车在reference_line上的SL坐标 */
 void PathReuseDecider::GetADCSLPoint(const ReferenceLine& reference_line,
                                      common::SLPoint* adc_position_sl) {
   common::math::Vec2d adc_position = {injector_->vehicle_state()->x(),
@@ -221,6 +256,8 @@ void PathReuseDecider::GetADCSLPoint(const ReferenceLine& reference_line,
   reference_line.XYToSL(adc_position, adc_position_sl);
 }
 
+/* 检查 自车历史轨迹 与 reference line对应的自车前方所有静态障碍物 是否存在碰撞
+   -> loop over all valid trajectory point and static obstacle */
 bool PathReuseDecider::IsCollisionFree(
     ReferenceLineInfo* const reference_line_info) {
   const ReferenceLine& reference_line = reference_line_info->reference_line();
@@ -234,6 +271,8 @@ bool PathReuseDecider::IsCollisionFree(
 
   // current obstacles
   std::vector<Polygon2d> obstacle_polygons;
+  // 只考虑静态障碍物 static obstacle
+  // 筛选出自车前方静止障碍物, 将其边框存储在obstacle_polygons中
   for (auto obstacle :
        reference_line_info->path_decision()->obstacles().Items()) {
     // filtered all non-static objects and virtual obstacle
@@ -263,10 +302,12 @@ bool PathReuseDecider::IsCollisionFree(
                    Vec2d(obstacle_sl.end_s(), obstacle_sl.start_l())}));
   }
 
+  // 如果没有静态障碍物, 返回collision_free = true
   if (obstacle_polygons.empty()) {
     return true;
   }
 
+  // 如果没有历史轨迹, 返回collision_free = false
   const auto& history_frame = injector_->frame_history()->Latest();
   if (!history_frame) {
     return false;
@@ -278,15 +319,20 @@ bool PathReuseDecider::IsCollisionFree(
   common::math::Vec2d path_end_position = {history_path.back().x(),
                                            history_path.back().y()};
   reference_line.XYToSL(path_end_position, &path_end_position_sl);
+
+  // 对历史轨迹上的每一个轨迹点与静态obstacle进行碰撞检查
   for (size_t i = 0; i < history_path.size(); ++i) {
     common::SLPoint path_position_sl;
     common::math::Vec2d path_position = {history_path[i].x(),
                                          history_path[i].y()};
     reference_line.XYToSL(path_position, &path_position_sl);
+    // 不考虑历史轨迹末端的轨迹点
     if (path_end_position_sl.s() - path_position_sl.s() <=
         kNumExtraTailBoundPoint * kPathBoundsDeciderResolution) {
       break;
     }
+
+    // 略过自车后面的轨迹点
     if (path_position_sl.s() < adc_position_sl.s() - kSBuffer) {
       continue;
     }
@@ -294,6 +340,8 @@ bool PathReuseDecider::IsCollisionFree(
         common::VehicleConfigHelper::Instance()->GetBoundingBox(
             history_path[i]);
     std::vector<Vec2d> ABCDpoints = vehicle_box.GetAllCorners();
+
+    // 将自车在当前轨迹点的边框 与 静态obstacle的边框进行碰撞检查
     for (const auto& corner_point : ABCDpoints) {
       // For each corner point, project it onto reference_line
       common::SLPoint curr_point_sl;
@@ -323,16 +371,21 @@ bool PathReuseDecider::IsCollisionFree(
       }
     }
   }
+  
   return true;
 }
 
 // check the length of the path
+// 检查当前的Path是否过短
 bool PathReuseDecider::NotShortPath(const DiscretizedPath& current_path) {
   // TODO(shu): use gflag
   static constexpr double kShortPathThreshold = 60;
   return current_path.size() >= kShortPathThreshold;
 }
 
+/* 在History Path中, 基于当前自车位置, 截取后续的Path
+   -> 该Path仅包括横向规划的结果
+   -> 该Path最短长度要求有60个点 */
 bool PathReuseDecider::TrimHistoryPath(
     Frame* frame, ReferenceLineInfo* const reference_line_info) {
   const ReferenceLine& reference_line = reference_line_info->reference_line();
@@ -342,6 +395,7 @@ bool PathReuseDecider::TrimHistoryPath(
     return false;
   }
 
+  // 提取历史轨迹规划起始点的path point -> history_init_path_point
   const common::TrajectoryPoint history_planning_start_point =
       history_frame->PlanningStartPoint();
   common::PathPoint history_init_path_point =
@@ -351,6 +405,7 @@ bool PathReuseDecider::TrimHistoryPath(
          << history_init_path_point.y() << "], s: ["
          << history_init_path_point.s() << "]";
 
+  // 提取当前规划起始点的path point
   const common::TrajectoryPoint planning_start_point =
       frame->PlanningStartPoint();
   common::PathPoint init_path_point = planning_start_point.path_point();
@@ -358,8 +413,7 @@ bool PathReuseDecider::TrimHistoryPath(
          << "], y[" << init_path_point.y() << "], s: [" << init_path_point.s()
          << "]";
 
-  const DiscretizedPath& history_path =
-      history_frame->current_frame_planned_path();
+  const DiscretizedPath& history_path = history_frame->current_frame_planned_path();
   DiscretizedPath trimmed_path;
   common::SLPoint adc_position_sl;  // current vehicle sl position
   GetADCSLPoint(reference_line, &adc_position_sl);
@@ -367,6 +421,7 @@ bool PathReuseDecider::TrimHistoryPath(
 
   size_t path_start_index = 0;
 
+  // find initial point in previous path
   for (size_t i = 0; i < history_path.size(); ++i) {
     // find previous init point
     if (history_path[i].s() > 0) {
@@ -381,15 +436,18 @@ bool PathReuseDecider::TrimHistoryPath(
   reference_line.XYToSL(init_path_point, &init_path_position_sl);
   bool inserted_init_point = false;
 
+  // 从历史轨迹的起始点往后搜索, 生成trimmed_path
+  // trimmed_path以自车当前位置为起始点
   for (size_t i = path_start_index; i < history_path.size(); ++i) {
     common::SLPoint path_position_sl;
-    common::math::Vec2d path_position = {history_path[i].x(),
-                                         history_path[i].y()};
+    common::math::Vec2d path_position = {history_path[i].x(), history_path[i].y()};
 
     reference_line.XYToSL(path_position, &path_position_sl);
 
+    // history path point与当前自车位置的s distance
     double updated_s = path_position_sl.s() - init_path_position_sl.s();
     // insert init point
+    // 将自车位置作为trimmed_path的起始点
     if (updated_s > 0 && !inserted_init_point) {
       trimmed_path.emplace_back(init_path_point);
       trimmed_path.back().set_s(0);
@@ -412,6 +470,7 @@ bool PathReuseDecider::TrimHistoryPath(
   ADEBUG << "trimmed_path[0]: " << trimmed_path.front().s();
   ADEBUG << "[END] trimmed_path.size(): " << trimmed_path.size();
 
+  // trimmed_path is not short
   if (!NotShortPath(trimmed_path)) {
     ADEBUG << "short path: " << trimmed_path.size();
     return false;
@@ -424,8 +483,7 @@ bool PathReuseDecider::TrimHistoryPath(
   ADEBUG << "previous path_data size: " << path_data->discretized_path().size();
   path_data->SetDiscretizedPath(DiscretizedPath(std::move(trimmed_path)));
   ADEBUG << "not short path: " << trimmed_path.size();
-  ADEBUG << "current path size: "
-         << reference_line_info->path_data().discretized_path().size();
+  ADEBUG << "current path size: " << reference_line_info->path_data().discretized_path().size();
 
   return true;
 }

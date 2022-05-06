@@ -205,6 +205,7 @@ Status LaneFollowStage::PlanOnReferenceLine(
   }
 
   // determine if there is a destination on reference line.
+  // set destination s distance to dest_stop_s
   double dest_stop_s = -1.0;
   for (const auto* obstacle :
        reference_line_info->path_decision()->obstacles().Items()) {
@@ -217,6 +218,10 @@ Status LaneFollowStage::PlanOnReferenceLine(
     }
   }
 
+  // add additional cost if there are obstacle in front of destination point
+  // or if there is no destination on current reference line
+  // 目的是, 在多条reference line中, 总是选择能够到达终点的reference line上的轨迹
+  // 在终点前存在障碍物时, 选择可能的可以绕过障碍物达到终点的轨迹
   for (const auto* obstacle :
        reference_line_info->path_decision()->obstacles().Items()) {
     if (obstacle->IsVirtual()) {

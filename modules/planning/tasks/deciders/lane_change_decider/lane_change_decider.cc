@@ -39,6 +39,11 @@ LaneChangeDecider::LaneChangeDecider(
 }
 
 // added a dummy parameter to enable this task in ExecuteTaskOnReferenceLine
+/* 处理router触发的变道(基于是否有IsChangeLane()出现):
+   -> 对目标车道, 检查每个obstacle是否处在变道的time-gap要求之内
+      -> 同向: time-gap > 3s
+      -> 对向: time-gap > 5s
+   -> 更新ChangeLaneStatus状态机 */
 Status LaneChangeDecider::Process(
     Frame* frame, ReferenceLineInfo* const current_reference_line_info) {
   // Sanity checks.
@@ -46,6 +51,7 @@ Status LaneChangeDecider::Process(
 
   const auto& lane_change_decider_config = config_.lane_change_decider_config();
 
+  // 从frame中读取当前所有可用车道对应的reference_line_info
   std::list<ReferenceLineInfo>* reference_line_info =
       frame->mutable_reference_line_info();
   if (reference_line_info->empty()) {
@@ -54,6 +60,8 @@ Status LaneChangeDecider::Process(
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 如果reckless_change_lane() == true, 则强行将ChangeLane设置为目标车道, 不进行后面的obstacle time-gap检查与LaneChangeStatus状态机更新
+  // 把router推荐车道对应的reference_line_info放到列表的第一个位置
   if (lane_change_decider_config.reckless_change_lane()) {
     PrioritizeChangeLane(true, reference_line_info);
     return Status::OK();
@@ -64,12 +72,14 @@ Status LaneChangeDecider::Process(
                           ->mutable_change_lane();
   double now = Clock::NowInSeconds();
 
+  // 检查目标车道上, obstacle的time-gap是否满足lane-change条件(time-gap > 3s; time-gap > 5s(对向来车))
   prev_status->set_is_clear_to_change_lane(false);
   if (current_reference_line_info->IsChangeLanePath()) {
     prev_status->set_is_clear_to_change_lane(
         IsClearToChangeLane(current_reference_line_info));
   }
 
+  // exception handling
   if (!prev_status->has_status()) {
     UpdateStatus(now, ChangeLaneStatus::CHANGE_LANE_FINISHED,
                  GetCurrentPathId(*reference_line_info));
@@ -77,32 +87,53 @@ Status LaneChangeDecider::Process(
     return Status::OK();
   }
 
+  // has_change_lane表示router是否有变道需求
   bool has_change_lane = reference_line_info->size() > 1;
   ADEBUG << "has_change_lane: " << has_change_lane;
+
+  // 如果router没有变道请求, 则将ChangeLaneStatus更新为CHANGE_LANE_FINISHED
+  // 如果router有状态请求, 则进行ChangeLaneStatus的更新 (状态机)
   if (!has_change_lane) {
     const auto& path_id = reference_line_info->front().Lanes().Id();
-    if (prev_status->status() == ChangeLaneStatus::CHANGE_LANE_FINISHED) {
-    } else if (prev_status->status() == ChangeLaneStatus::IN_CHANGE_LANE) {
+    if (prev_status->status() == ChangeLaneStatus::CHANGE_LANE_FINISHED) 
+    {
+    } 
+    else if (prev_status->status() == ChangeLaneStatus::IN_CHANGE_LANE) 
+    {
       UpdateStatus(now, ChangeLaneStatus::CHANGE_LANE_FINISHED, path_id);
-    } else if (prev_status->status() == ChangeLaneStatus::CHANGE_LANE_FAILED) {
-    } else {
+    } 
+    else if (prev_status->status() == ChangeLaneStatus::CHANGE_LANE_FAILED) 
+    {
+    } 
+    else 
+    {
       const std::string msg =
           absl::StrCat("Unknown state: ", prev_status->ShortDebugString());
       AERROR << msg;
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
     return Status::OK();
-  } else {  // has change lane in reference lines.
+  } 
+  else 
+  {  // has change lane in reference lines.
+    // 返回start lane id
     auto current_path_id = GetCurrentPathId(*reference_line_info);
     if (current_path_id.empty()) {
       const std::string msg = "The vehicle is not on any reference line";
       AERROR << msg;
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
-    if (prev_status->status() == ChangeLaneStatus::IN_CHANGE_LANE) {
-      if (prev_status->path_id() == current_path_id) {
+    // 如果当前在变道中:
+    if (prev_status->status() == ChangeLaneStatus::IN_CHANGE_LANE) 
+    {
+      // 如果当前仍处于原车道内, 将IsChangeLane()对应的reference_line_info放到第一位(idx = 0的位置)
+      if (prev_status->path_id() == current_path_id) 
+      {
         PrioritizeChangeLane(true, reference_line_info);
-      } else {
+      } 
+      // 如果当前完成了变道(lane id不同于之前的lane id), 将新车道对应的reference_line_info放到第一位(idx = 0的位置)
+      else 
+      {
         // RemoveChangeLane(reference_line_info);
         PrioritizeChangeLane(false, reference_line_info);
         ADEBUG << "removed change lane.";
@@ -110,7 +141,12 @@ Status LaneChangeDecider::Process(
                      current_path_id);
       }
       return Status::OK();
-    } else if (prev_status->status() == ChangeLaneStatus::CHANGE_LANE_FAILED) {
+    }
+    // 如果变道失败
+    // 在失败后xx秒内, 将目标车道设为当前车道, 并保持 change_lane_fail_freeze_time();
+    // 在失败后xx秒后, 重新尝试lane change (设置为IN_CHANGE_LANE状态)
+    else if (prev_status->status() == ChangeLaneStatus::CHANGE_LANE_FAILED) 
+    {
       // TODO(SHU): add an optimization_failure counter to enter
       // change_lane_failed status
       if (now - prev_status->timestamp() <
@@ -123,8 +159,13 @@ Status LaneChangeDecider::Process(
         ADEBUG << "change lane again after failed";
       }
       return Status::OK();
-    } else if (prev_status->status() ==
-               ChangeLaneStatus::CHANGE_LANE_FINISHED) {
+    } 
+    // 当前处在变道完成阶段 / 没有变道
+    // 每次变道结束后xx秒内, 保持当前车道 change_lane_success_freeze_time()
+    // 在变道结束xx秒后, 触发变道 (设置为IN_CHANGE_LANE)
+    else if (prev_status->status() ==
+               ChangeLaneStatus::CHANGE_LANE_FINISHED) 
+    {
       if (now - prev_status->timestamp() <
           lane_change_decider_config.change_lane_success_freeze_time()) {
         // RemoveChangeLane(reference_line_info);
@@ -135,13 +176,16 @@ Status LaneChangeDecider::Process(
         UpdateStatus(now, ChangeLaneStatus::IN_CHANGE_LANE, current_path_id);
         ADEBUG << "change lane again after success";
       }
-    } else {
+    } 
+    else 
+    {
       const std::string msg =
           absl::StrCat("Unknown state: ", prev_status->ShortDebugString());
       AERROR << msg;
       return Status(ErrorCode::PLANNING_ERROR, msg);
     }
   }
+  
   return Status::OK();
 }
 
@@ -193,6 +237,7 @@ void LaneChangeDecider::UpdateStatus(ChangeLaneStatus::Status status_code,
   UpdateStatus(Clock::NowInSeconds(), status_code, path_id);
 }
 
+// 更新lane_change_status
 void LaneChangeDecider::UpdateStatus(double timestamp,
                                      ChangeLaneStatus::Status status_code,
                                      const std::string& path_id) {
@@ -204,6 +249,9 @@ void LaneChangeDecider::UpdateStatus(double timestamp,
   lane_change_status->set_status(status_code);
 }
 
+/* 提高ChangeLane(Router全局规划得到的目标车道)的优先级:
+   -> is_prioritize_change_lane = true: 将ChangeLane对应的reference_line_info放到列表中index为0的位置
+   -> is_prioritize_change_lane = false: 将非ChangeLane对应的reference_line_info放到列表中index为0的位置 */
 void LaneChangeDecider::PrioritizeChangeLane(
     const bool is_prioritize_change_lane,
     std::list<ReferenceLineInfo>* reference_line_info) const {
@@ -257,6 +305,7 @@ void LaneChangeDecider::RemoveChangeLane(
   }
 }
 
+// 返回非IsChangeLanePath()对应的Lane().Id()
 std::string LaneChangeDecider::GetCurrentPathId(
     const std::list<ReferenceLineInfo>& reference_line_info) const {
   for (const auto& info : reference_line_info) {
@@ -267,6 +316,8 @@ std::string LaneChangeDecider::GetCurrentPathId(
   return "";
 }
 
+/* 对于router决策的目标车道(ChangeLane), 基于规则, 判断其对应车道上目标的time-gap是否满足变道的条件 (true满足, false不满足)
+   -> 同向前后目标time-gap: 3s, 对向前目标time-gap: 5s */
 bool LaneChangeDecider::IsClearToChangeLane(
     ReferenceLineInfo* reference_line_info) {
   double ego_start_s = reference_line_info->AdcSlBoundary().start_s();
@@ -274,6 +325,10 @@ bool LaneChangeDecider::IsClearToChangeLane(
   double ego_v =
       std::abs(reference_line_info->vehicle_state().linear_velocity());
 
+  // 基于规则, 对每一个目标, 评估其是否允许满足lane change需要的time-gap条件
+  // -> static / virtual obstacle不在这里考虑
+  // -> 对于同向的前后目标, 要求满足3s的time-gap; 对于对向的前目标, 要求满足5s的time-gap
+  // -> 对每一个目标的最终评估结果, 保存在obstacle->IsLaneChangeBlocking()中
   for (const auto* obstacle :
        reference_line_info->path_decision()->obstacles().Items()) {
     if (obstacle->IsVirtual() || obstacle->IsStatic()) {
@@ -286,6 +341,7 @@ bool LaneChangeDecider::IsClearToChangeLane(
     double start_l = std::numeric_limits<double>::max();
     double end_l = -std::numeric_limits<double>::max();
 
+    // 得到obstacle在SL坐标系下的边框: <start_s, end_s> & <start_l, end_l>
     for (const auto& p : obstacle->PerceptionPolygon().points()) {
       SLPoint sl_point;
       reference_line_info->reference_line().XYToSL(p, &sl_point);
@@ -296,6 +352,7 @@ bool LaneChangeDecider::IsClearToChangeLane(
       end_l = std::fmax(end_l, sl_point.l());
     }
 
+    // 如果obstacle在目标车道左右边界以外, 则不做进一步考虑
     if (reference_line_info->IsChangeLanePath()) {
       double left_width(0), right_width(0);
       reference_line_info->mutable_reference_line()->GetLaneWidth(
@@ -307,6 +364,7 @@ bool LaneChangeDecider::IsClearToChangeLane(
 
     // Raw estimation on whether same direction with ADC or not based on
     // prediction trajectory
+    // 检查自车运动方向与目标车运动方向是否一致
     bool same_direction = true;
     if (obstacle->HasTrajectory()) {
       double obstacle_moving_direction =
@@ -333,6 +391,9 @@ bool LaneChangeDecider::IsClearToChangeLane(
 
     double kForwardSafeDistance = 0.0;
     double kBackwardSafeDistance = 0.0;
+    
+    // 如果同方向, 则目标车与自车的time-gap应大于3s
+    // 如果为对向, 则需要time-gap大于5s
     if (same_direction) {
       kForwardSafeDistance =
           std::fmax(kForwardMinSafeDistanceOnSameDirection,
@@ -347,6 +408,7 @@ bool LaneChangeDecider::IsClearToChangeLane(
       kBackwardSafeDistance = kBackwardMinSafeDistanceOnOppositeDirection;
     }
 
+    // isLaneChangeBlocking()用于记录obstacle是否block住ChangeLane (不满足time-gap), 简单的基于距离的迟滞逻辑
     if (HysteresisFilter(ego_start_s - end_s, kBackwardSafeDistance,
                          kDistanceBuffer, obstacle->IsLaneChangeBlocking()) &&
         HysteresisFilter(start_s - ego_end_s, kForwardSafeDistance,
