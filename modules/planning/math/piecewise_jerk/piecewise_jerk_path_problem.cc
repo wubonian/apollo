@@ -27,6 +27,11 @@ PiecewiseJerkPathProblem::PiecewiseJerkPathProblem(
     const std::array<double, 3>& x_init)
     : PiecewiseJerkProblem(num_of_knots, delta_s, x_init) {}
 
+/* 计算P矩阵: 1/2*X_T*P*X + q_T*X (X = {X, X', X''}):
+   -> 1/2*X_T*P*X = 1/2*w_x*x^2 + 1/2*w_x_ref*x^2 + 1/2*w_dx*x'^2 + 1/2*w_ddx*x''^2 + 1/2*w_dddx*((x2''-x1'')/ds)^2
+   -> P_data: P矩阵的非零系数, 按列->行
+   -> P_indices: 每个系数对应的行号
+   -> P_indptr: 每个非零系数的序号, 按照列->行 */
 void PiecewiseJerkPathProblem::CalculateKernel(std::vector<c_float>* P_data,
                                                std::vector<c_int>* P_indices,
                                                std::vector<c_int>* P_indptr) {
@@ -101,6 +106,7 @@ void PiecewiseJerkPathProblem::CalculateKernel(std::vector<c_float>* P_data,
   P_indptr->push_back(ind_p);
 }
 
+/* 计算q矩阵: q*X = -2*w_ref*x_ref*x, 1/2*X_T*P*X + q*X约等于w_ref*(x-x_ref)的形式 */
 void PiecewiseJerkPathProblem::CalculateOffset(std::vector<c_float>* q) {
   CHECK_NOTNULL(q);
   const int n = static_cast<int>(num_of_knots_);

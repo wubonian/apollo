@@ -48,23 +48,31 @@ PiecewiseJerkProblem::PiecewiseJerkProblem(
   weight_x_ref_vec_ = std::vector<double>(num_of_knots_, 0.0);
 }
 
+/* 构建QP问题, 建立QP问题的P, q, A矩阵, 以及lower/upper边界:
+   -> 假设: 分段三次多项式
+   -> 输出的P, A矩阵为稀疏矩阵的形式, 调用csc_matrix()将其构建成OSQP的输入 */
 OSQPData* PiecewiseJerkProblem::FormulateProblem() {
-  // calculate kernel
+  // QP问题:
+  // minimize: 1/2*x*P*x + q*x
+  // constraints: 1 <= A*x <= u
+  
+  // calculate kernel, 计算P矩阵, 根据所构建问题不同, P矩阵不同
   std::vector<c_float> P_data;
   std::vector<c_int> P_indices;
   std::vector<c_int> P_indptr;
   CalculateKernel(&P_data, &P_indices, &P_indptr);
 
-  // calculate affine constraints
+  // calculate affine constraints, 计算A矩阵
   std::vector<c_float> A_data;
   std::vector<c_int> A_indices;
   std::vector<c_int> A_indptr;
   std::vector<c_float> lower_bounds;
   std::vector<c_float> upper_bounds;
+  // 实现各piece-wise多项式0/1/2/3阶导数边界限制, 以及0/1/2阶连续性限制
   CalculateAffineConstraint(&A_data, &A_indices, &A_indptr, &lower_bounds,
                             &upper_bounds);
 
-  // calculate offset
+  // calculate offset, 计算q矩阵
   std::vector<c_float> q;
   CalculateOffset(&q);
 
@@ -87,7 +95,13 @@ OSQPData* PiecewiseJerkProblem::FormulateProblem() {
   return data;
 }
 
+/* perform piece wise jerk optimization: piece-wise三次多项式, 构建OSQP问题
+   -> OSQP输出最优化的X向量{x, x', x''} */
 bool PiecewiseJerkProblem::Optimize(const int max_iter) {
+  // 构建QP问题的A, P, q矩阵
+  // minimize: 1/2*X*P*X + q*X
+  // boundary: l <= A*X <= u
+  // X = {x, x', x''}
   OSQPData* data = FormulateProblem();
 
   OSQPSettings* settings = SolverDefaultSettings();
@@ -133,6 +147,11 @@ bool PiecewiseJerkProblem::Optimize(const int max_iter) {
   return true;
 }
 
+/* 计算OSQP问题中的线性转A矩阵以及对应的上下bound: l <= A*x <= u
+   -> 实现的边界条件包括: 0/1/2/3阶导数边界限制, 各段三次多项式0阶/1阶连续性限制
+   -> A_data: A矩阵中非零系数, 按照列->行的顺序依次存储
+   -> A_indices: 系数在A矩阵中的行数
+   -> A_indptr: 系数的索引, 按照列->行的顺序依次存储 */
 void PiecewiseJerkProblem::CalculateAffineConstraint(
     std::vector<c_float>* A_data, std::vector<c_int>* A_indices,
     std::vector<c_int>* A_indptr, std::vector<c_float>* lower_bounds,
@@ -149,8 +168,14 @@ void PiecewiseJerkProblem::CalculateAffineConstraint(
   std::vector<std::vector<std::pair<c_int, c_float>>> variables(
       num_of_variables);
 
+  // 1. variables 代表一个m*n的矩阵A
+  //    -> 行数m = constraint_index
+  //    -> 列数n = num_of_variables
+  // 2. lower_bounds代表下边界矩阵l, 大小为constraint_index
+  // 3. upper_bounds代表上边界矩阵u, 大小为constraint_index
   int constraint_index = 0;
   // set x, x', x'' bounds
+  // 实现0/1/2阶导数边界限制: l_x<=x<=u_x, l_x'<=x'<= u_x', l_x''<=x''<=u_x''
   for (int i = 0; i < num_of_variables; ++i) {
     if (i < n) {
       variables[i].emplace_back(constraint_index, 1.0);
@@ -177,6 +202,7 @@ void PiecewiseJerkProblem::CalculateAffineConstraint(
   CHECK_EQ(constraint_index, num_of_variables);
 
   // x(i->i+1)''' = (x(i+1)'' - x(i)'') / delta_s
+  // 实现3阶导数边界限制: l_x''' <= (x(i+1)''-x(i)'')/delta_s <= u_x'''的限制
   for (int i = 0; i + 1 < n; ++i) {
     variables[2 * n + i].emplace_back(constraint_index, -1.0);
     variables[2 * n + i + 1].emplace_back(constraint_index, 1.0);
@@ -188,6 +214,7 @@ void PiecewiseJerkProblem::CalculateAffineConstraint(
   }
 
   // x(i+1)' - x(i)' - 0.5 * delta_s * x(i)'' - 0.5 * delta_s * x(i+1)'' = 0
+  // 实现三次多项式一阶连续条件: x(i+1)' = ai1 + 2*ai2*ds + 3*ai3*ds^2 = x(i)' + 1/2*ds*x(i)'' + 1/2*ds*x(i+1)''
   for (int i = 0; i + 1 < n; ++i) {
     variables[n + i].emplace_back(constraint_index, -1.0 * scale_factor_[2]);
     variables[n + i + 1].emplace_back(constraint_index, 1.0 * scale_factor_[2]);
@@ -202,6 +229,7 @@ void PiecewiseJerkProblem::CalculateAffineConstraint(
 
   // x(i+1) - x(i) - delta_s * x(i)'
   // - 1/3 * delta_s^2 * x(i)'' - 1/6 * delta_s^2 * x(i+1)''
+  // 三次多项式0阶连续条件: x(i+1) = x(i) + ds*x(i)' + 1/3*ds^2*x(i)'' + 1/6*ds^2*x(i+1)''
   auto delta_s_sq_ = delta_s_ * delta_s_;
   for (int i = 0; i + 1 < n; ++i) {
     variables[i].emplace_back(constraint_index,
@@ -241,13 +269,16 @@ void PiecewiseJerkProblem::CalculateAffineConstraint(
   CHECK_EQ(constraint_index, num_of_constraints);
 
   int ind_p = 0;
+  // 遍历A矩阵的每一个列
   for (int i = 0; i < num_of_variables; ++i) {
-    A_indptr->push_back(ind_p);
+    A_indptr->push_back(ind_p);     // A矩阵中非0系数的index, 按照列来给
     for (const auto& variable_nz : variables[i]) {
       // coefficient
+      // 该系数的值
       A_data->push_back(variable_nz.second);
 
       // constraint index
+      // 对应该系数在A矩阵的行数
       A_indices->push_back(variable_nz.first);
       ++ind_p;
     }
@@ -257,6 +288,7 @@ void PiecewiseJerkProblem::CalculateAffineConstraint(
   A_indptr->push_back(ind_p);
 }
 
+/* 设置QP问题的setting */
 OSQPSettings* PiecewiseJerkProblem::SolverDefaultSettings() {
   // Define Solver default settings
   OSQPSettings* settings =
@@ -286,6 +318,7 @@ void PiecewiseJerkProblem::set_ddx_bounds(
   ddx_bounds_ = std::move(ddx_bounds);
 }
 
+/* 设置x的上下边界 */
 void PiecewiseJerkProblem::set_x_bounds(const double x_lower_bound,
                                         const double x_upper_bound) {
   for (auto& x : x_bounds_) {
@@ -310,6 +343,7 @@ void PiecewiseJerkProblem::set_ddx_bounds(const double ddx_lower_bound,
   }
 }
 
+/* 设置x_ref, 并设置每个x_ref的weight均为weight_x_ref */
 void PiecewiseJerkProblem::set_x_ref(const double weight_x_ref,
                                      std::vector<double> x_ref) {
   CHECK_EQ(x_ref.size(), num_of_knots_);
@@ -320,6 +354,7 @@ void PiecewiseJerkProblem::set_x_ref(const double weight_x_ref,
   has_x_ref_ = true;
 }
 
+/* 设置x_ref, 并按照weight_x_ref_vec设置每个x_ref的weight */
 void PiecewiseJerkProblem::set_x_ref(std::vector<double> weight_x_ref_vec,
                                      std::vector<double> x_ref) {
   CHECK_EQ(x_ref.size(), num_of_knots_);
@@ -330,6 +365,7 @@ void PiecewiseJerkProblem::set_x_ref(std::vector<double> weight_x_ref_vec,
   has_x_ref_ = true;
 }
 
+/* 设置end_state的ref与对应的权重 */
 void PiecewiseJerkProblem::set_end_state_ref(
     const std::array<double, 3>& weight_end_state,
     const std::array<double, 3>& end_state_ref) {

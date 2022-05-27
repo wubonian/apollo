@@ -37,14 +37,17 @@ PiecewiseJerkTrajectory1d::PiecewiseJerkTrajectory1d(const double p,
   param_.push_back(0.0);
 }
 
+/* 新增三次多项式, 更新三次多项式的系数, 并计算end_state {x1, x1', x1''} */
 void PiecewiseJerkTrajectory1d::AppendSegment(const double jerk,
                                               const double param) {
   CHECK_GT(param, FLAGS_numerical_epsilon);
-
+  // param_为{0, ds, 2*ds, ...}
   param_.push_back(param_.back() + param);
 
+  // 新增三次多项式, 多项式的系数由{x0, x0', x0'', x0'''}计算得到
   segments_.emplace_back(last_p_, last_v_, last_a_, jerk, param);
 
+  // 基于新增的三次多项式, 分别计算x1, x1', x1''
   last_p_ = segments_.back().end_position();
 
   last_v_ = segments_.back().end_velocity();
@@ -52,8 +55,10 @@ void PiecewiseJerkTrajectory1d::AppendSegment(const double jerk,
   last_a_ = segments_.back().end_acceleration();
 }
 
+/* 对给定距离param, 计算在多段三次多项式segments_中的第order阶值 */
 double PiecewiseJerkTrajectory1d::Evaluate(const std::uint32_t order,
                                            const double param) const {
+  // 选取输入param在分段三次多项式中的位置索引it_lower
   auto it_lower = std::lower_bound(param_.begin(), param_.end(), param);
 
   if (it_lower == param_.begin()) {
@@ -66,6 +71,7 @@ double PiecewiseJerkTrajectory1d::Evaluate(const std::uint32_t order,
   }
 
   auto index = std::distance(param_.begin(), it_lower);
+  // 计算三次多项式segments_[index-1], 相对距离param_[index-1]处的l, l', l''
   return segments_[index - 1].Evaluate(order, param - param_[index - 1]);
 }
 

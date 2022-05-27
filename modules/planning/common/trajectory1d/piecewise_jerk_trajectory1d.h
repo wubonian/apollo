@@ -44,7 +44,7 @@ class PiecewiseJerkTrajectory1d : public Curve1d {
   void AppendSegment(const double jerk, const double param);
 
  private:
-  std::vector<ConstantJerkTrajectory1d> segments_;
+  std::vector<ConstantJerkTrajectory1d> segments_;    // 分段的三次多项式
 
   double last_p_;
 

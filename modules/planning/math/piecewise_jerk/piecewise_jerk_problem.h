@@ -151,15 +151,16 @@ class PiecewiseJerkProblem {
   std::vector<double> dx_;
   std::vector<double> ddx_;
 
-  std::array<double, 3> x_init_;
-  std::array<double, 3> scale_factor_ = {{1.0, 1.0, 1.0}};
+  std::array<double, 3> x_init_;        // initial state
+  std::array<double, 3> scale_factor_ = {{1.0, 1.0, 1.0}};    
+  // 状态向量X = {scale_factor[0]*x, scale_factor[1]*x', scale_factor[2]*x''}
 
-  std::vector<std::pair<double, double>> x_bounds_;
-  std::vector<std::pair<double, double>> dx_bounds_;
-  std::vector<std::pair<double, double>> ddx_bounds_;
-  std::pair<double, double> dddx_bound_;
+  std::vector<std::pair<double, double>> x_bounds_;         // lateral distance bound
+  std::vector<std::pair<double, double>> dx_bounds_;        // lateral velocity bound
+  std::vector<std::pair<double, double>> ddx_bounds_;       // lateral acceleration bound
+  std::pair<double, double> dddx_bound_;                    // lateral jerk bound
 
-  double weight_x_ = 0.0;
+  double weight_x_ = 0.0;               // weight for x, dx, ddx, dddx
   double weight_dx_ = 0.0;
   double weight_ddx_ = 0.0;
   double weight_dddx_ = 0.0;
@@ -168,13 +169,13 @@ class PiecewiseJerkProblem {
 
   bool has_x_ref_ = false;
   double weight_x_ref_ = 0.0;
-  std::vector<double> x_ref_;
+  std::vector<double> x_ref_;           // reference lateral distance for each longitudinal distance
   // un-uniformed weighting
-  std::vector<double> weight_x_ref_vec_;
+  std::vector<double> weight_x_ref_vec_;            // weight for each reference lateral distance
 
   bool has_end_state_ref_ = false;
-  std::array<double, 3> weight_end_state_ = {{0.0, 0.0, 0.0}};
-  std::array<double, 3> end_state_ref_;
+  std::array<double, 3> weight_end_state_ = {{0.0, 0.0, 0.0}};      // weight for each reference end state
+  std::array<double, 3> end_state_ref_;               // reference end state
 };
 
 }  // namespace planning

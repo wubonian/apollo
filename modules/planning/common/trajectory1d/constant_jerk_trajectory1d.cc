@@ -26,6 +26,7 @@
 namespace apollo {
 namespace planning {
 
+/* 初始化3次多项式的x0, x0', x0'', x0''', dis, 并计算对应的end_state(x1, x1', x1'') */
 ConstantJerkTrajectory1d::ConstantJerkTrajectory1d(const double p0,
                                                    const double v0,
                                                    const double a0,
@@ -38,6 +39,7 @@ ConstantJerkTrajectory1d::ConstantJerkTrajectory1d(const double p0,
   a1_ = Evaluate(2, param_);
 }
 
+/* 计算三次多项式的x1, x1', x1'', 三次多项式的系数由x0, x0', x0'', x0'''计算得到 */
 double ConstantJerkTrajectory1d::Evaluate(const std::uint32_t order,
                                           const double param) const {
   switch (order) {
