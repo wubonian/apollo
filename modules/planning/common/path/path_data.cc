@@ -113,6 +113,7 @@ common::PathPoint PathData::GetPathPointWithPathS(const double s) const {
   return discretized_path_.Evaluate(s);
 }
 
+/* 找到path_data中与ref_s距离最近的path_point */
 bool PathData::GetPathPointWithRefS(const double ref_s,
                                     common::PathPoint *const path_point) const {
   ACHECK(reference_line_);

@@ -427,6 +427,7 @@ bool LaneChangeDecider::IsClearToChangeLane(
   return true;
 }
 
+/* check if perception is blocked by obstacle */
 bool LaneChangeDecider::IsPerceptionBlocked(
     const ReferenceLineInfo& reference_line_info,
     const double search_beam_length, const double search_beam_radius_intensity,

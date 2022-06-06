@@ -204,6 +204,7 @@ bool Frame::CreateReferenceLineInfo(
  * @brief: create static virtual object with lane width,
  *         mainly used for virtual stop wall
  */
+/* 在给定obstacle_s的位置处, 生成一个长(s)为0.1, 宽(l)为4.0的一个虚拟障碍物 */
 const Obstacle *Frame::CreateStopObstacle(
     ReferenceLineInfo *const reference_line_info,
     const std::string &obstacle_id, const double obstacle_s) {
@@ -213,6 +214,7 @@ const Obstacle *Frame::CreateStopObstacle(
   }
 
   const auto &reference_line = reference_line_info->reference_line();
+  // FLAGS_virtual_stop_wall_length默认值为0.1m
   const double box_center_s = obstacle_s + FLAGS_virtual_stop_wall_length / 2.0;
   auto box_center = reference_line.GetReferencePoint(box_center_s);
   double heading = reference_line.GetReferencePoint(obstacle_s).heading();

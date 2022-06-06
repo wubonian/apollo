@@ -25,6 +25,8 @@ using apollo::common::util::WithinBound;
 /*
  * @brief: build virtual obstacle of stop wall, and add STOP decision
  */
+/* 在reference_line的stop_line_s处, 生成一个虚拟的静态障碍物(s=0.1, l=4.0);
+   基于该虚拟障碍物, 生成纵向的stop decision */
 int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
                       const double stop_distance,
                       const StopReasonCode& stop_reason_code,
@@ -35,6 +37,7 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
   CHECK_NOTNULL(reference_line_info);
 
   // check
+  // 检查stop_line_s是否位于reference_line的有效长度之内
   const auto& reference_line = reference_line_info->reference_line();
   if (!WithinBound(0.0, reference_line.Length(), stop_line_s)) {
     AERROR << "stop_line_s[" << stop_line_s << "] is not on reference line";
@@ -42,6 +45,7 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
   }
 
   // create virtual stop wall
+  // 在reference line的stop_line_s处, 生成一个长(s)0.1, 宽(l)4.0的虚拟障碍物
   const auto* obstacle =
       frame->CreateStopObstacle(reference_line_info, stop_wall_id, stop_line_s);
   if (!obstacle) {
@@ -55,6 +59,7 @@ int BuildStopDecision(const std::string& stop_wall_id, const double stop_line_s,
   }
 
   // build stop decision
+  // stop_s是期望的自车停止距离
   const double stop_s = stop_line_s - stop_distance;
   const auto& stop_point = reference_line.GetReferencePoint(stop_s);
   const double stop_heading =
