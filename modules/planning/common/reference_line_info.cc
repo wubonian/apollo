@@ -1008,6 +1008,7 @@ void ReferenceLineInfo::SetBlockingObstacle(
   blocking_obstacle_ = path_decision_.Find(blocking_obstacle_id);
 }
 
+/* 返回Frenet坐标系下, 所有Stop Decision障碍物的stop_point, 并排序 */
 std::vector<common::SLPoint> ReferenceLineInfo::GetAllStopDecisionSLPoint()
     const {
   std::vector<common::SLPoint> result;

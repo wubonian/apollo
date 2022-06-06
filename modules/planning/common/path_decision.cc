@@ -83,6 +83,7 @@ void PathDecision::EraseStBoundaries() {
   }
 }
 
+/* 将decision的tag与具体值设置到object_id对应的obstacle中 */
 bool PathDecision::AddLongitudinalDecision(const std::string &tag,
                                            const std::string &object_id,
                                            const ObjectDecisionType &decision) {
@@ -95,6 +96,8 @@ bool PathDecision::AddLongitudinalDecision(const std::string &tag,
   return true;
 }
 
+/* main_stop_存储path_decision的最近stop point:
+   -> 将输入的obj_stop与main_stop抉择, 更新最近的main_stop点 */
 bool PathDecision::MergeWithMainStop(const ObjectStop &obj_stop,
                                      const std::string &obj_id,
                                      const ReferenceLine &reference_line,

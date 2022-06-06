@@ -289,6 +289,8 @@ void Obstacle::SetPerceptionSlBoundary(const SLBoundary& sl_boundary) {
   sl_boundary_ = sl_boundary;
 }
 
+/* 计算对于obstacle的stop distance (自车刹停后与前车的纵向距离)
+   stop distance = sqrt(R^2 - (R-dis_l)^2) + buffer */
 double Obstacle::MinRadiusStopDistance(
     const common::VehicleParam& vehicle_param) const {
   if (min_radius_stop_distance_ > 0) {

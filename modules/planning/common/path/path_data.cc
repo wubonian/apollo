@@ -69,6 +69,7 @@ bool PathData::SetFrenetPath(FrenetFramePath frenet_path) {
   return true;
 }
 
+/* 将输入的path_point_decision_guide设置到PathData内部的path_point_decision_guide_中 */
 bool PathData::SetPathPointDecisionGuide(
     std::vector<std::tuple<double, PathPointType, double>>
         path_point_decision_guide) {

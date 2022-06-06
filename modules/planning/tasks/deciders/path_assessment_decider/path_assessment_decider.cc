@@ -48,6 +48,11 @@ PathAssessmentDecider::PathAssessmentDecider(
     const std::shared_ptr<DependencyInjector>& injector)
     : Decider(config, injector) {}
 
+/* entry point for PathAssessmentDecider:
+   -> 对PiecewiseJerkPathOptimizer输出的多条candidate path, 进行有效性判断, 并进行筛选
+   -> 对每条path的每个采样点, 进行In/Out Lane属性设置, 并找到自车道当前的blocking obstacle
+   -> 对每条path进行基于规则的排序, 将优先级最高的path设置到reference_line_info的path_data中
+   -> 更新PathDeciderStatus的其他属性 */
 Status PathAssessmentDecider::Process(
     Frame* const frame, ReferenceLineInfo* const reference_line_info) {
   // Sanity checks.
@@ -58,6 +63,7 @@ Status PathAssessmentDecider::Process(
     return Status::OK();
   }
 
+  // 提取PIECEWISE_JERK_PATH_OPTIMIZER生成的frenet离散轨迹
   const auto& candidate_path_data = reference_line_info->GetCandidatePathData();
 
   if (candidate_path_data.empty()) {
@@ -68,15 +74,18 @@ Status PathAssessmentDecider::Process(
   const auto& end_time0 = std::chrono::system_clock::now();
 
   // 1. Remove invalid path.
+  // 对每个candidate_path_data做有效性检查, 将通过检查的path推入到valid_path_data中, 进行后续处理
   std::vector<PathData> valid_path_data;
   for (const auto& curr_path_data : candidate_path_data) {
     // RecordDebugInfo(curr_path_data, curr_path_data.path_label(),
     //                 reference_line_info);
     if (curr_path_data.path_label().find("fallback") != std::string::npos) {
+      // 检查fallback path是否有效
       if (IsValidFallbackPath(*reference_line_info, curr_path_data)) {
         valid_path_data.push_back(curr_path_data);
       }
     } else {
+      // 检查regular path是否有效
       if (IsValidRegularPath(*reference_line_info, curr_path_data)) {
         valid_path_data.push_back(curr_path_data);
       }
@@ -90,10 +99,13 @@ Status PathAssessmentDecider::Process(
   // 2. Analyze and add important info for speed decider to use
   size_t cnt = 0;
   const Obstacle* blocking_obstacle_on_selflane = nullptr;
+
+  // 对piece-wise jerk path optimizer生成的每一个横向轨迹, 进行以下的决策
   for (size_t i = 0; i != valid_path_data.size(); ++i) {
     auto& curr_path_data = valid_path_data[i];
     if (curr_path_data.path_label().find("fallback") != std::string::npos) {
       // remove empty path_data.
+      // 保证fallback path在valid_path_data的第一位 i = 0
       if (!curr_path_data.Empty()) {
         if (cnt != i) {
           valid_path_data[cnt] = curr_path_data;
@@ -102,14 +114,18 @@ Status PathAssessmentDecider::Process(
       }
       continue;
     }
+    // 生成path_data上每一个点的In-Lane, Out-Of-Lane属性
     SetPathInfo(*reference_line_info, &curr_path_data);
     // Trim all the lane-borrowing paths so that it ends with an in-lane
     // position.
+    // 对于lane borrow的path, 对其轨迹进行裁剪, 保证轨迹的终点处于In-Lane的状态
     if (curr_path_data.path_label().find("pullover") == std::string::npos) {
       TrimTailingOutLanePoints(&curr_path_data);
     }
 
     // find blocking_obstacle_on_selflane, to be used for lane selection later
+    // 对"regular/self"的path (保持当前车道), 根据PathBoundsDecider找到的blocking_obstacle_id
+    // 返回对应的障碍物blocking_obstacle_on_selflane
     if (curr_path_data.path_label().find("self") != std::string::npos) {
       const auto blocking_obstacle_id = curr_path_data.blocking_obstacle_id();
       blocking_obstacle_on_selflane =
@@ -130,6 +146,7 @@ Status PathAssessmentDecider::Process(
            << "path length = " << curr_path_data.frenet_frame_path().size();
   }
   valid_path_data.resize(cnt);
+  
   // If there is no valid path_data, exit.
   if (valid_path_data.empty()) {
     const std::string msg = "Neither regular nor fallback path is valid.";
@@ -137,11 +154,15 @@ Status PathAssessmentDecider::Process(
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
   ADEBUG << "There are " << valid_path_data.size() << " valid path data.";
+  
+  // 记录中间处理的时间
   const auto& end_time2 = std::chrono::system_clock::now();
   diff = end_time2 - end_time1;
   ADEBUG << "Time for path info labeling: " << diff.count() * 1000 << " msec.";
 
   // 3. Pick the optimal path.
+  // 对所生成的path, 依据设定的优先级规则, 筛选出优先级最高的, 
+  // 并将path_data与blocking_obstacle设置到reference_line_info中
   std::sort(valid_path_data.begin(), valid_path_data.end(),
             std::bind(ComparePathData, std::placeholders::_1,
                       std::placeholders::_2, blocking_obstacle_on_selflane));
@@ -152,14 +173,16 @@ Status PathAssessmentDecider::Process(
       std::string::npos) {
     FLAGS_static_obstacle_nudge_l_buffer = 0.8;
   }
+  // 将reference_line_info中的path_data设置为valid_path_data中优先级最高的那个
   *(reference_line_info->mutable_path_data()) = valid_path_data.front();
+  // 将优先级最高path的blocking_obstacle_id设置为reference_line_info的blocking_obstacle
   reference_line_info->SetBlockingObstacle(
       valid_path_data.front().blocking_obstacle_id());
   const auto& end_time3 = std::chrono::system_clock::now();
   diff = end_time3 - end_time2;
   ADEBUG << "Time for optimal path selection: " << diff.count() * 1000
          << " msec.";
-
+  // 将按照优先级排序后的path_data设置到reference_line_info的candidate_path_data中
   reference_line_info->SetCandidatePathData(std::move(valid_path_data));
 
   // 4. Update necessary info for lane-borrow decider's future uses.
@@ -167,6 +190,8 @@ Status PathAssessmentDecider::Process(
   auto* mutable_path_decider_status = injector_->planning_context()
                                           ->mutable_planning_status()
                                           ->mutable_path_decider();
+  // front_static_obstacle_cycle_counter(): 前方静态障碍物存在cycle时间
+  // 如果检查到有静态障碍物, 累加counter, 否则递减counter
   if (reference_line_info->GetBlockingObstacle() != nullptr) {
     int front_static_obstacle_cycle_counter =
         mutable_path_decider_status->front_static_obstacle_cycle_counter();
@@ -186,6 +211,8 @@ Status PathAssessmentDecider::Process(
   }
 
   // Update self-lane usage info.
+  // able_to_use_self_lane_counter(): lane follow path存在cycle时间
+  // 存在"self" path, 则累加counter, 否则reset
   if (reference_line_info->path_data().path_label().find("self") !=
       std::string::npos) {
     // && std::get<1>(reference_line_info->path_data()
@@ -243,6 +270,13 @@ Status PathAssessmentDecider::Process(
   return Status::OK();
 }
 
+/* 对两个path进行排序:
+   -> "regular"path优先级比"fallback"path的优先级高
+   -> 在两个path长度相差不大时, 优先选用自车道path, 否则选用更长的
+   -> 优先选择从逆向车道借道少的path
+   -> 对于左右分别借道的path, 有前方障碍物时, 优先选择容易避障的方向; 否则选择基于自车位置容易变道的方向
+   -> 优先选择尽早返回In-Lane状态的path
+   -> 优先选择左侧的path */
 bool ComparePathData(const PathData& lhs, const PathData& rhs,
                      const Obstacle* blocking_obstacle) {
   ADEBUG << "Comparing " << lhs.path_label() << " and " << rhs.path_label();
@@ -255,14 +289,18 @@ bool ComparePathData(const PathData& lhs, const PathData& rhs,
     ADEBUG << "RHS is empty.";
     return true;
   }
+  
   // Regular path goes before fallback path.
+  // 优先选择regular path
   bool lhs_is_regular = lhs.path_label().find("regular") != std::string::npos;
   bool rhs_is_regular = rhs.path_label().find("regular") != std::string::npos;
   if (lhs_is_regular != rhs_is_regular) {
     return lhs_is_regular;
   }
+  
   // Select longer path.
   // If roughly same length, then select self-lane path.
+  // 在两个path长度相差小于15m时, 优先选用自车道对应的path; 否则优先选用长的path
   bool lhs_on_selflane = lhs.path_label().find("self") != std::string::npos;
   bool rhs_on_selflane = rhs.path_label().find("self") != std::string::npos;
   static constexpr double kSelfPathLengthComparisonTolerance = 15.0;
@@ -282,8 +320,10 @@ bool ComparePathData(const PathData& lhs, const PathData& rhs,
       return lhs_path_length > rhs_path_length;
     }
   }
+  
   // If roughly same length, and must borrow neighbor lane,
   // then prefer to borrow forward lane rather than reverse lane.
+  // 优先选择从逆向车道借道少的path
   int lhs_on_reverse =
       ContainsOutOnReverseLane(lhs.path_point_decision_guide());
   int rhs_on_reverse =
@@ -292,8 +332,12 @@ bool ComparePathData(const PathData& lhs, const PathData& rhs,
   if (std::abs(lhs_on_reverse - rhs_on_reverse) > 6) {
     return lhs_on_reverse < rhs_on_reverse;
   }
+
   // For two lane-borrow directions, based on ADC's position,
   // select the more convenient one.
+  // 对于两个path分别为左右两边借道的情况
+  // -> 如果前方存在静止障碍物, 优先选择容易避障的方向
+  // -> 如果前方没有静止障碍物, 基于自车当前横向位置选择动作最少的方向
   if ((lhs.path_label().find("left") != std::string::npos &&
        rhs.path_label().find("right") != std::string::npos) ||
       (lhs.path_label().find("right") != std::string::npos &&
@@ -319,8 +363,11 @@ bool ComparePathData(const PathData& lhs, const PathData& rhs,
       }
     }
   }
+  
   // If same length, both neighbor lane are forward,
   // then select the one that returns to in-lane earlier.
+  // 记录左右path第一次返回到In-Lane状态时, 对应path_point的索引
+  // 返回较早返回In-Lane状态的path
   static constexpr double kBackToSelfLaneComparisonTolerance = 20.0;
   int lhs_back_idx = GetBackToInLaneIndex(lhs.path_point_decision_guide());
   int rhs_back_idx = GetBackToInLaneIndex(rhs.path_point_decision_guide());
@@ -329,8 +376,10 @@ bool ComparePathData(const PathData& lhs, const PathData& rhs,
   if (std::fabs(lhs_back_s - rhs_back_s) > kBackToSelfLaneComparisonTolerance) {
     return lhs_back_idx < rhs_back_idx;
   }
+
   // If same length, both forward, back to inlane at same time,
   // select the left one to side-pass.
+  // 在其他条件一样的情况下, 优先选择左侧的path
   bool lhs_on_leftlane = lhs.path_label().find("left") != std::string::npos;
   bool rhs_on_leftlane = rhs.path_label().find("left") != std::string::npos;
   if (lhs_on_leftlane != rhs_on_leftlane) {
@@ -342,6 +391,11 @@ bool ComparePathData(const PathData& lhs, const PathData& rhs,
   return false;
 }
 
+/* 检查Regular Path是否有效:
+   -> 横向距离是否过大
+   -> 横向距离是否偏离参考线所处道路的边界
+   -> 生成的轨迹是否会与静态障碍物发生碰撞
+   -> 生成的轨迹是否会导致车辆停止在对向左/右车道上 */
 bool PathAssessmentDecider::IsValidRegularPath(
     const ReferenceLineInfo& reference_line_info, const PathData& path_data) {
   // Basic sanity checks.
@@ -373,6 +427,9 @@ bool PathAssessmentDecider::IsValidRegularPath(
   return true;
 }
 
+/* 检查Fallback Path是否有效:
+   -> 横向距离是否过大
+   -> 横向距离是否偏离参考线所处道路的边界 */
 bool PathAssessmentDecider::IsValidFallbackPath(
     const ReferenceLineInfo& reference_line_info, const PathData& path_data) {
   // Basic sanity checks.
@@ -393,6 +450,8 @@ bool PathAssessmentDecider::IsValidFallbackPath(
   return true;
 }
 
+/* 对path_data的每一个点, 设置对应的横向decision: In-Lane还是Out-Of-Lane;
+   将decision结果导入到path_data的private variable中 */
 void PathAssessmentDecider::SetPathInfo(
     const ReferenceLineInfo& reference_line_info, PathData* const path_data) {
   // Go through every path_point, and label its:
@@ -401,15 +460,19 @@ void PathAssessmentDecider::SetPathInfo(
   std::vector<PathPointDecision> path_decision;
 
   // 0. Initialize the path info.
+  // 对每一个path_data中的path point点, 初始化对应的path_point_decision
   InitPathPointDecision(*path_data, &path_decision);
 
   // 1. Label caution types, differently for side-pass or lane-change.
+  // 如果当前的reference line是变道的目标车道
   if (reference_line_info.IsChangeLanePath()) {
     // If lane-change, then label the lane-changing part to
     // be out-on-forward lane.
+    // 对于变道车道: 对path_data的每一个点, 设置对应的path_decision
     SetPathPointType(reference_line_info, *path_data, true, &path_decision);
   } else {
     // Otherwise, only do the label for borrow-lane generated paths.
+    // 跳过fallback与lane follow的path_data, 只对lane borrow的path_data设置type
     if (path_data->path_label().find("fallback") == std::string::npos &&
         path_data->path_label().find("self") == std::string::npos) {
       SetPathPointType(reference_line_info, *path_data, false, &path_decision);
@@ -417,9 +480,11 @@ void PathAssessmentDecider::SetPathInfo(
   }
 
   // SetObstacleDistance(reference_line_info, *path_data, &path_decision);
+  // 将生成的path_decision赋值到path_data内部的path_point_decision_guide_中
   path_data->SetPathPointDecisionGuide(std::move(path_decision));
 }
 
+/* 对lane borrow的轨迹进行裁剪, 保证其终点处于In-Lane的状态 */
 void PathAssessmentDecider::TrimTailingOutLanePoints(
     PathData* const path_data) {
   // Don't trim self-lane path or fallback path.
@@ -427,8 +492,11 @@ void PathAssessmentDecider::TrimTailingOutLanePoints(
       path_data->path_label().find("self") != std::string::npos) {
     return;
   }
+  // 仅对LaneBorrow / LaneChange path执行以下操作
 
   // Trim.
+  // 对生成的横向轨迹从后向前裁剪:
+  // 保证生成轨迹最终点的横向属性为In-Lane
   ADEBUG << "Trimming " << path_data->path_label();
   auto frenet_path = path_data->frenet_frame_path();
   auto path_point_decision = path_data->path_point_decision_guide();
@@ -452,6 +520,7 @@ void PathAssessmentDecider::TrimTailingOutLanePoints(
   path_data->SetPathPointDecisionGuide(std::move(path_point_decision));
 }
 
+/* 检查frenet轨迹的每一个横向距离是否大于设定阈值 */
 bool PathAssessmentDecider::IsGreatlyOffReferenceLine(
     const PathData& path_data) {
   static constexpr double kOffReferenceLineThreshold = 20.0;
@@ -466,6 +535,7 @@ bool PathAssessmentDecider::IsGreatlyOffReferenceLine(
   return false;
 }
 
+/* 检查frenet轨迹的每一个横向距离是否大于reference line所处道路的边界 */
 bool PathAssessmentDecider::IsGreatlyOffRoad(
     const ReferenceLineInfo& reference_line_info, const PathData& path_data) {
   static constexpr double kOffRoadThreshold = 10.0;
@@ -486,6 +556,7 @@ bool PathAssessmentDecider::IsGreatlyOffRoad(
   return false;
 }
 
+/* 检查生成的轨迹是否与静止障碍物有碰撞 */
 bool PathAssessmentDecider::IsCollidingWithStaticObstacles(
     const ReferenceLineInfo& reference_line_info, const PathData& path_data) {
   // Get all obstacles and convert them into frenet-frame polygons.
@@ -494,10 +565,12 @@ bool PathAssessmentDecider::IsCollidingWithStaticObstacles(
       reference_line_info.path_decision().obstacles();
   for (const auto* obstacle : indexed_obstacles.Items()) {
     // Filter out unrelated obstacles.
+    // 筛选障碍物是否为静止障碍物, 只对静止障碍物进行检查
     if (!IsWithinPathDeciderScopeObstacle(*obstacle)) {
       continue;
     }
     // Ignore too small obstacles.
+    // 如果静止障碍物过小, 也不做碰撞检查
     const auto& obstacle_sl = obstacle->PerceptionSLBoundary();
     if ((obstacle_sl.end_s() - obstacle_sl.start_s()) *
             (obstacle_sl.end_l() - obstacle_sl.start_l()) <
@@ -513,6 +586,7 @@ bool PathAssessmentDecider::IsCollidingWithStaticObstacles(
   }
 
   // Go through all the four corner points at every path pt, check collision.
+  // 检查轨迹是否与obstacle有碰撞
   for (size_t i = 0; i < path_data.discretized_path().size(); ++i) {
     if (path_data.frenet_frame_path().back().s() -
             path_data.frenet_frame_path()[i].s() <
@@ -548,20 +622,23 @@ bool PathAssessmentDecider::IsCollidingWithStaticObstacles(
   return false;
 }
 
+/* 检查生成的轨迹是否会导致车辆停止在对向车道上 */
 bool PathAssessmentDecider::IsStopOnReverseNeighborLane(
     const ReferenceLineInfo& reference_line_info, const PathData& path_data) {
+  // 只针对变道/借道工况进行检查
   if (path_data.path_label().find("left") == std::string::npos &&
       path_data.path_label().find("right") == std::string::npos) {
     return false;
   }
 
+  // 返回所有stop decision的障碍物的stop point并排序
   std::vector<common::SLPoint> all_stop_point_sl =
       reference_line_info.GetAllStopDecisionSLPoint();
   if (all_stop_point_sl.empty()) {
     return false;
   }
 
-  double check_s = 0.0;
+  double check_s = 0.0;     // stop point与自车车头的距离
   static constexpr double kLookForwardBuffer =
       5.0;  // filter out sidepass stop fence
   const double adc_end_s = reference_line_info.AdcSlBoundary().end_s();
@@ -576,6 +653,7 @@ bool PathAssessmentDecider::IsStopOnReverseNeighborLane(
     return false;
   }
 
+  // 返回stop point处的自车道左右距离
   double lane_left_width = 0.0;
   double lane_right_width = 0.0;
   if (!reference_line_info.reference_line().GetLaneWidth(
@@ -583,6 +661,7 @@ bool PathAssessmentDecider::IsStopOnReverseNeighborLane(
     return false;
   }
 
+  // path_point_sl对应stop_point处, 生成的轨迹点
   static constexpr double kSDelta = 0.3;
   common::SLPoint path_point_sl;
   for (const auto& frenet_path_point : path_data.frenet_frame_path()) {
@@ -597,6 +676,8 @@ bool PathAssessmentDecider::IsStopOnReverseNeighborLane(
 
   hdmap::Id neighbor_lane_id;
   double neighbor_lane_width = 0.0;
+  // 如果为向左变道, stop_point处对应的轨迹点位于左边车道, 且左边车道为逆行车道, 则返回true
+  // 表示发现生成的轨迹在对向车道停车的工况
   if (path_data.path_label().find("left") != std::string::npos &&
       path_point_sl.l() > lane_left_width) {
     if (reference_line_info.GetNeighborLaneInfo(
@@ -606,7 +687,9 @@ bool PathAssessmentDecider::IsStopOnReverseNeighborLane(
              << neighbor_lane_id.id() << "]";
       return true;
     }
-  } else if (path_data.path_label().find("right") != std::string::npos &&
+  } 
+  // 对向右变道也是如此
+  else if (path_data.path_label().find("right") != std::string::npos &&
              path_point_sl.l() < -lane_right_width) {
     if (reference_line_info.GetNeighborLaneInfo(
             ReferenceLineInfo::LaneType::RightReverse, path_point_sl.s(),
@@ -619,6 +702,7 @@ bool PathAssessmentDecider::IsStopOnReverseNeighborLane(
   return false;
 }
 
+/* 对每一个path_data里的点, 初始化对应的path_point_decision为<s, UNKNOWN, double_max> */
 void PathAssessmentDecider::InitPathPointDecision(
     const PathData& path_data,
     std::vector<PathPointDecision>* const path_point_decision) {
@@ -635,6 +719,8 @@ void PathAssessmentDecider::InitPathPointDecision(
   }
 }
 
+/* 设置对path_data上的每一个点, 设置path_point_decision: 
+   -> 轨迹点为In-Lane还是Out-On-Forward/Reverse-Lane */
 void PathAssessmentDecider::SetPathPointType(
     const ReferenceLineInfo& reference_line_info, const PathData& path_data,
     const bool is_lane_change_path,
@@ -663,6 +749,7 @@ void PathAssessmentDecider::SetPathPointType(
                     ego_center_shift_distance * std::sin(ego_theta)};
     ego_box.Shift(shift_vec);
     SLBoundary ego_sl_boundary;
+    // 对path data上的每一个点, 获取整车边框Box在SL坐标系下的投影ego_sl_boundary
     if (!reference_line_info.reference_line().GetSLBoundary(ego_box,
                                                             &ego_sl_boundary)) {
       ADEBUG << "Unable to get SL-boundary of ego-vehicle.";
@@ -680,6 +767,7 @@ void PathAssessmentDecider::SetPathPointType(
           is_prev_point_out_lane ? back_to_inlane_extra_buffer : 0.0;
 
       // Check for lane-change and lane-borrow differently:
+      // 对于变道工况, 只将变道过程中的部分标注为Out-Of-Lane
       if (is_lane_change_path) {
         // For lane-change path, only transitioning part is labeled as
         // out-of-lane.
@@ -700,7 +788,10 @@ void PathAssessmentDecider::SetPathPointType(
           std::get<1>((*path_point_decision)[i]) =
               PathData::PathPointType::OUT_ON_FORWARD_LANE;
         }
-      } else {
+      } 
+      // 对于借道模式, 如果自车不在当前车道内, 则根据道路类型设为out-on-forward/reverse-lane
+      // 否则设为Unknown
+      else {
         // For lane-borrow path, as long as ADC is not on the lane of
         // reference-line, it is out on other lanes. It might even be
         // on reverse lane!
@@ -795,6 +886,7 @@ void PathAssessmentDecider::RecordDebugInfo(
       {path_points.begin(), path_points.end()});
 }
 
+/* 返回标记为Out-On-Reverse-Lane的点的个数 */
 int ContainsOutOnReverseLane(
     const std::vector<PathPointDecision>& path_point_decision) {
   int ret = 0;
@@ -807,6 +899,7 @@ int ContainsOutOnReverseLane(
   return ret;
 }
 
+/* 返回path中, 第一次从Out返回到In-Lane状态的Index */
 int GetBackToInLaneIndex(
     const std::vector<PathPointDecision>& path_point_decision) {
   // ACHECK(!path_point_decision.empty());
