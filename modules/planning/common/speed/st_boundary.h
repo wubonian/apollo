@@ -178,7 +178,7 @@ class STBoundary : public common::math::Polygon2d {
   STPoint upper_left_point_;
   STPoint upper_right_point_;
 
-  double obstacle_road_right_ending_t_;
+  double obstacle_road_right_ending_t_;   // 障碍物的高路权时间段[0, obstacle_road_right_ending_t_]
 };
 
 }  // namespace planning

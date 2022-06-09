@@ -76,6 +76,7 @@ bool PathDecision::AddLateralDecision(const std::string &tag,
   return true;
 }
 
+/* 清楚所有obstacle的STBoundary */
 void PathDecision::EraseStBoundaries() {
   for (const auto *obstacle : obstacles_.Items()) {
     auto *obstacle_ptr = obstacles_.Find(obstacle->Id());

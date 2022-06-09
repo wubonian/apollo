@@ -170,7 +170,7 @@ void RuleBasedStopDecider::StopOnSidePass(
   }
 
   if (check_clear &&
-      CheckClearDone(*reference_line_info, change_lane_stop_path_point)) {
+      (*reference_line_info, change_lane_stop_path_point)) {
     check_clear = false;
   }
 

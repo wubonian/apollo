@@ -203,19 +203,20 @@ class STObstaclesProcessor {
   // A vector of sorted obstacle's t-edges:
   //  (is_starting_t, t, s_min, s_max, obs_id).
   std::vector<std::tuple<int, double, double, double, std::string>>
-      obs_t_edges_;
+      obs_t_edges_;     // sorted obstacle edge, 非Ignore obstacle在ST图中的左右边界
   int obs_t_edges_idx_;
 
-  std::unordered_map<std::string, STBoundary> obs_id_to_st_boundary_;
+  std::unordered_map<std::string, STBoundary> obs_id_to_st_boundary_;         // 存储非Ignore obstacle(非KEEP_CLEAR 动态obstacle与closest_static_obstacle)的集合<obstacle_id, STBoundary>
   std::unordered_map<std::string, ObjectDecisionType> obs_id_to_decision_;
 
   std::vector<std::tuple<std::string, STBoundary, Obstacle*>>
-      candidate_clear_zones_;
+      candidate_clear_zones_;       // KEEP_CLEAR obstacle的集合: <obstacle_id, STBoundary, obstacle_pointer>
 
   std::unordered_map<std::string, STBoundary>
-      obs_id_to_alternative_st_boundary_;
+      obs_id_to_alternative_st_boundary_;       // unordered_map: <obstacle_id, 障碍物高路权部分的STBoundary>, 
+                                                // 包括静态障碍物与动态障碍物的高陆权部分
 
-  std::vector<std::pair<double, double>> adc_low_road_right_segments_;
+  std::vector<std::pair<double, double>> adc_low_road_right_segments_;    // SL path中的低路权部分 vector<<low_s, high_s>>
 
   History* history_ = nullptr;
 };

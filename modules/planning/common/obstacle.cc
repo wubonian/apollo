@@ -705,6 +705,7 @@ void Obstacle::SetStBoundaryType(const STBoundary::BoundaryType type) {
   path_st_boundary_.SetBoundaryType(type);
 }
 
+/* 清楚目标的STBoundary */
 void Obstacle::EraseStBoundary() { path_st_boundary_ = STBoundary(); }
 
 void Obstacle::SetReferenceLineStBoundary(const STBoundary& boundary) {

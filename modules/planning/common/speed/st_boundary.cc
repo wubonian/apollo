@@ -68,6 +68,7 @@ STBoundary::STBoundary(
   obstacle_road_right_ending_t_ = std::numeric_limits<double>::lowest();
 }
 
+/* 基于给定的lower/upper_points, 在ST图中设定对应的边界 */
 STBoundary STBoundary::CreateInstance(
     const std::vector<STPoint>& lower_points,
     const std::vector<STPoint>& upper_points) {
@@ -84,6 +85,7 @@ STBoundary STBoundary::CreateInstance(
   return STBoundary(point_pairs);
 }
 
+/* 基于lower_points, upper_points, 构建STBoundary类 */
 STBoundary STBoundary::CreateInstanceAccurate(
     const std::vector<STPoint>& lower_points,
     const std::vector<STPoint>& upper_points) {
@@ -168,6 +170,7 @@ bool STBoundary::GetUnblockSRange(const double curr_time, double* s_upper,
   return true;
 }
 
+/* 根据计算给定时间curr_time在STBoundary中得到的<s_lower, s_upper> */
 bool STBoundary::GetBoundarySRange(const double curr_time, double* s_upper,
                                    double* s_lower) const {
   CHECK_NOTNULL(s_upper);
@@ -259,6 +262,7 @@ bool STBoundary::IsPointInBoundary(const STPoint& st_point) const {
   return (check_upper * check_lower < 0);
 }
 
+/* 使用距离s扩充ST Boundary的上下边界upper/lower_points_ */
 STBoundary STBoundary::ExpandByS(const double s) const {
   if (lower_points_.empty()) {
     return STBoundary();

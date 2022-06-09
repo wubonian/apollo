@@ -23,6 +23,7 @@
 namespace apollo {
 namespace planning {
 
+/* 初始化Driving Limits */
 void STDrivingLimits::Init(const double max_acc, const double max_dec,
                            const double max_v, double curr_v) {
   max_acc_ = max_acc;
@@ -36,9 +37,10 @@ void STDrivingLimits::Init(const double max_acc, const double max_dec,
   lower_s0_ = 0.0;
 }
 
+/* 基于给定的最大/最小加速度, 计算出来的当前时刻自车最大最小位置 */
 std::pair<double, double> STDrivingLimits::GetVehicleDynamicsLimits(
     const double t) const {
-  std::pair<double, double> dynamic_limits;
+  std::pair<double, double> dynamic_limits;     // 基于最大最小加速度算出来的在给定时间处的s边界<s_lower, s_upper>
   // Process lower bound: (constant deceleration)
   double dec_time = lower_v0_ / max_dec_;
   if (t - lower_t0_ < dec_time) {

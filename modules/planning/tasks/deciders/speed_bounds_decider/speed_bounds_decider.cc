@@ -48,6 +48,7 @@ SpeedBoundsDecider::SpeedBoundsDecider(
   speed_bounds_config_ = config.speed_bounds_decider_config();
 }
 
+/*  */
 Status SpeedBoundsDecider::Process(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
   // retrieve data from frame and reference_line_info
@@ -62,11 +63,12 @@ Status SpeedBoundsDecider::Process(
       speed_bounds_config_, reference_line, path_data,
       path_data.discretized_path().Length(), speed_bounds_config_.total_time(),
       injector_);
-
+  // 如果该值为false, 清除之前计算的st_boundary
   if (!FLAGS_use_st_drivable_boundary) {
     path_decision->EraseStBoundaries();
   }
 
+  // 更新计算每个obstacle的STBoundary以及对应的BoundaryType
   if (boundary_mapper.ComputeSTBoundary(path_decision).code() ==
       ErrorCode::PLANNING_ERROR) {
     const std::string msg = "Mapping obstacle failed.";
@@ -79,6 +81,7 @@ Status SpeedBoundsDecider::Process(
          << " msec.";
 
   std::vector<const STBoundary *> boundaries;
+  // 剔除掉BoundaryType为KEEP_CLEAR的obstacle, 以及对应的boundary
   for (auto *obstacle : path_decision->obstacles().Items()) {
     const auto &id = obstacle->Id();
     const auto &st_boundary = obstacle->path_st_boundary();
