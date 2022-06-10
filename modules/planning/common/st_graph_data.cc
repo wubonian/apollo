@@ -70,6 +70,7 @@ planning_internal::STGraphDebug* StGraphData::mutable_st_graph_debug() {
   return st_graph_debug_;
 }
 
+/* st_drivable_boundary_设置st_boundary: <t, s_lower, s_upper, v_lower, v_upper>*/
 bool StGraphData::SetSTDrivableBoundary(
     const std::vector<std::tuple<double, double, double>>& s_boundary,
     const std::vector<std::tuple<double, double, double>>& v_obs_info) {
@@ -81,9 +82,11 @@ bool StGraphData::SetSTDrivableBoundary(
     st_bound_instance->set_t(std::get<0>(s_boundary[i]));
     st_bound_instance->set_s_lower(std::get<1>(s_boundary[i]));
     st_bound_instance->set_s_upper(std::get<2>(s_boundary[i]));
+    
     if (std::get<1>(v_obs_info[i]) > -kObsSpeedIgnoreThreshold) {
       st_bound_instance->set_v_obs_lower(std::get<1>(v_obs_info[i]));
     }
+    
     if (std::get<2>(v_obs_info[i]) < kObsSpeedIgnoreThreshold) {
       st_bound_instance->set_v_obs_upper(std::get<2>(v_obs_info[i]));
     }

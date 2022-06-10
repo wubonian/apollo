@@ -201,6 +201,7 @@ bool STBoundary::GetBoundarySRange(const double curr_time, double* s_upper,
   return true;
 }
 
+/* 计算给定时间curr_time处, obstacle上下边界s_lower/s_upper的速度(用于设定自车speed boundary) */
 bool STBoundary::GetBoundarySlopes(const double curr_time, double* ds_upper,
                                    double* ds_lower) const {
   if (ds_upper == nullptr || ds_lower == nullptr) {

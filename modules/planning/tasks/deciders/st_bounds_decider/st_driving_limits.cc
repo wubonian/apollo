@@ -65,6 +65,7 @@ std::pair<double, double> STDrivingLimits::GetVehicleDynamicsLimits(
   return dynamic_limits;
 }
 
+/* 将STDrivingLimits里的s0, to, v0更新为当前时刻的位置与速度边界 */
 void STDrivingLimits::UpdateBlockingInfo(const double t, const double lower_s,
                                          const double lower_v,
                                          const double upper_s,

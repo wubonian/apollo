@@ -165,7 +165,6 @@ Status STObstaclesProcessor::MapObstaclesToSTBoundaries(
     }
     // Update the trimmed obstacle into alternative st-bound storage
     // for later uses.
-    // 
     while (lower_points.size() > 2 &&
            lower_points.back().t() > obs_caution_end_t) {
       lower_points.pop_back();
@@ -302,6 +301,7 @@ STObstaclesProcessor::GetAllSTBoundaries() {
   return obs_id_to_st_boundary_;
 }
 
+/* 基于对每个目标的决策, 以及目标的速度, 计算自车的速度边界范围limiting_speed_info */
 bool STObstaclesProcessor::GetLimitingSpeedInfo(
     double t, std::pair<double, double>* const limiting_speed_info) {
   if (obs_id_to_decision_.empty()) {
@@ -317,10 +317,14 @@ bool STObstaclesProcessor::GetLimitingSpeedInfo(
     auto obs_st_boundary = obs_id_to_st_boundary_[obs_id];
     double obs_s_min = 0.0;
     double obs_s_max = 0.0;
+    // 计算给定时间处, obstacle的范围<obs_s_min, obs_s_max>
     obs_st_boundary.GetBoundarySRange(t, &obs_s_max, &obs_s_min);
     double obs_ds_lower = 0.0;
     double obs_ds_upper = 0.0;
+    // 计算给定时间处, obstacle的速度<obs_ds_upper, obs_ds_lower>
     obs_st_boundary.GetBoundarySlopes(t, &obs_ds_upper, &obs_ds_lower);
+    // 如果目标的决策时Yield或者Stop, 则将上边界限制在obstacle的下边界以下, 并将速度上限也限制在obstacle下边沿速度以下
+    // 对于Overtake, 则使用obstacle的上边界进行限制
     if (obs_decision.has_yield() || obs_decision.has_stop()) {
       if (obs_s_min <= s_max) {
         s_max = obs_s_min;
@@ -336,22 +340,41 @@ bool STObstaclesProcessor::GetLimitingSpeedInfo(
   return s_min <= s_max;
 }
 
-/*  */
+/* 在t时刻, 基于现有的决策过的目标, 计算自车的可通行区域, 对于新的目标:
+   -> 如果可以直接决策, 则将决策结果更新在obs_id_to_st_boundary_
+   -> 否则找出当前所有的可通行区域(available_s_bounds), 并给予其对目标做出所有的可能的决策(available_obs_decisions) */
 bool STObstaclesProcessor::GetSBoundsFromDecisions(
     double t, std::vector<std::pair<double, double>>* const available_s_bounds,
     std::vector<std::vector<std::pair<std::string, ObjectDecisionType>>>* const
         available_obs_decisions) {
+  /* 基本流程:
+     -> new_t_edges: 更新当前时刻新找到的obstacle start/end edges
+     -> obs_id_to_decision_: 当前时刻t下, 用于更新ST边界的obstacle <id, decision info>
+        -> 基于new_t_edges中找到的end edges, 剔除在t时刻已经不在ST图的目标
+        -> 对于overtake目标, 在越过其高路权段一定时间后, 也将其剔除, 也即在越过目标后, 不再考虑其上下边界
+     -> obs_id_to_st_boundary_: 所有non-ignore目标的<id, STBoundary>
+        -> 对于已经决策为overtake的目标, 只使用其高路权的部分
+     -> 基于当前用于决策的所有目标obs_id_to_decision_, 以及对应的决策(overtake, yield)
+        -> 计算当前时刻的可通行边界<s_min, s_max>
+     -> 基于可通行边界<s_min, s_max>, 对新发现的obstacle(基于新的start edge), 进行决策
+        -> 如果很容易判断处Yield/Overtake (在<s_min, s_max>以上/以下), 则直接决策, 并将新的目标以及决策结果加入到obs_id_to_decision_中
+        -> 如果不能很好的决策(obstacle的s边界位于<s_min, s_max>内), 则首先找出加上新目标后所有的可通行区域s_gaps, 然后对每个可通行
+           区域以及对应的新的目标进行遍历, 分别作出决策
+           -> available_s_bounds: 所有的可通行区域
+           -> available_obs_decisions: 对t时刻所有的新目标, 基于可通行区域, 做出的所有决策 */
+  
   // Sanity checks.
   available_s_bounds->clear();
   available_obs_decisions->clear();
 
   // Gather any possible change in st-boundary situations.
   ADEBUG << "There are " << obs_t_edges_.size() << " t-edges.";
-  std::vector<ObsTEdge> new_t_edges;
-  // 寻找给定时刻t前的obs_t_edges_[idx]
-  // 将t时刻前的obs_t_edges_增添到new_t_edges中
+  std::vector<ObsTEdge> new_t_edges;  // 当前t时刻查找到的所有新的edge
+  // 在给定的时间t, 查找新发现的edge, 并将所有新发现的edge添加到new_t_edges中
   while (obs_t_edges_idx_ < static_cast<int>(obs_t_edges_.size()) &&
          std::get<1>(obs_t_edges_[obs_t_edges_idx_]) <= t) {
+    // 因为下面的逻辑会基于end edge删除obstacle
+    // 如果在当前时刻t恰好遇到obstacle的end edge, 则仍将其保留, 这样该obstacle的边界仍可用于当前时刻的决策中
     if (std::get<0>(obs_t_edges_[obs_t_edges_idx_]) == 0 &&
         std::get<1>(obs_t_edges_[obs_t_edges_idx_]) == t) {
       break;
@@ -363,7 +386,7 @@ bool STObstaclesProcessor::GetSBoundsFromDecisions(
   }
 
   // For st-boundaries that disappeared before t, remove them.
-  // 遍历new_t_edges, 如果找到ST end edge, 就将obs_id_to_decision_中对应的obstacle移除
+  // 遍历所有新发现的new_t_edges, 如果找到ST end edge, 就将obs_id_to_decision_中对应的obstacle移除
   for (const auto& obs_t_edge : new_t_edges) {
     if (std::get<0>(obs_t_edge) == 0) {
       ADEBUG << "Obstacle id: " << std::get<4>(obs_t_edge)
@@ -408,6 +431,7 @@ bool STObstaclesProcessor::GetSBoundsFromDecisions(
   }
 
   // Based on existing decisions, get the s-boundary.
+  // 基于已经决策过的obstacle的STBoundary, 计算当前时刻t时, 自车可通行的边界范围<s_min, s_max>
   double s_min = 0.0;
   double s_max = planning_distance_;
   for (auto it : obs_id_to_decision_) {
@@ -426,6 +450,7 @@ bool STObstaclesProcessor::GetSBoundsFromDecisions(
       s_min = std::fmax(s_min, obs_s_max);
     }
   }
+  // 如果计算出的s_min > s_max, 则基于现有的obstacle以及对应的决策, 没有可通行区域
   if (s_min > s_max) {
     return false;
   }
@@ -434,6 +459,11 @@ bool STObstaclesProcessor::GetSBoundsFromDecisions(
 
   // For newly entering st_boundaries, determine possible new-boundaries.
   // For apparent ones, make decisions directly.
+  // 对于在t时刻新进入的目标[std::get<0>(obs_t_edge) == 1]
+  // 如果基于现有的可通行区域可以很容易做出overtake或者yield决策 (位于可通行区域[s_min, s_max]以下或者以上)
+  // 则直接做出决策YIELD/OVERTAKE, 并将其添加在obs_id_to_decision_中
+  // 将对应的decision设置在obs_id_to_decision_与obs_id_to_st_boundary_中
+  // 对于比较没法做出直接决策的obstacle, 将其推进ambiguous_t_edges中, 进行后续处理
   std::vector<ObsTEdge> ambiguous_t_edges;
   for (auto obs_t_edge : new_t_edges) {
     ADEBUG << "For obstacle id: " << std::get<4>(obs_t_edge)
@@ -462,13 +492,14 @@ bool STObstaclesProcessor::GetSBoundsFromDecisions(
   }
   
   // For ambiguous ones, enumerate all decisions and corresponding bounds.
-  // 首先, 寻找[s_min, s_max]范围内, 没有被ambiguous_t_edges block住的自由s区间段
+  // 首先, 寻找当前时刻t, 确定的可通行区域[s_min, s_max]范围内, 没有被ambiguous_t_edges对应obstacle block住的自由s区间段s_gaps
   auto s_gaps = FindSGaps(ambiguous_t_edges, s_min, s_max);
   if (s_gaps.empty()) {
     return false;
   }
 
-  // 遍历每个自由区间, 在每个自由区间内, 分别对每个ambiguous_t_edges进行决策
+  // 遍历每个自由区间, 在每个自由区间内, 分别对每个ambiguous_t_edges进行决策, 将决策结果反映在available_obs_decisions中
+  // 决策为基于每个obs_t_edge与s_gap的相对位置实现的
   for (auto s_gap : s_gaps) {
     available_s_bounds->push_back(s_gap);
     std::vector<std::pair<std::string, ObjectDecisionType>> obs_decisions;
@@ -487,6 +518,7 @@ bool STObstaclesProcessor::GetSBoundsFromDecisions(
   return true;
 }
 
+/* 将ambiguous obstacle的决策设定到obs_id_to_decision_与obs_id_to_st_boundary_中 */
 void STObstaclesProcessor::SetObstacleDecision(
     const std::string& obs_id, const ObjectDecisionType& obs_decision) {
   obs_id_to_decision_[obs_id] = obs_decision;
@@ -504,6 +536,7 @@ void STObstaclesProcessor::SetObstacleDecision(
   history_->mutable_history_status()->SetObjectStatus(obs_id, object_status);
 }
 
+/* 将ambiguous obstacle的决策设定到obs_id_to_decision_与obs_id_to_st_boundary_中 */
 void STObstaclesProcessor::SetObstacleDecision(
     const std::vector<std::pair<std::string, ObjectDecisionType>>&
         obstacle_decisions) {

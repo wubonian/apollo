@@ -204,10 +204,10 @@ class STObstaclesProcessor {
   //  (is_starting_t, t, s_min, s_max, obs_id).
   std::vector<std::tuple<int, double, double, double, std::string>>
       obs_t_edges_;     // sorted obstacle edge, 非Ignore obstacle在ST图中的左右边界
-  int obs_t_edges_idx_;
+  int obs_t_edges_idx_;     // 在用sweep-line遍历所有的obstacle ST edges时, 用于记录当前所搜索到的obs_edge的index
 
   std::unordered_map<std::string, STBoundary> obs_id_to_st_boundary_;         // 存储非Ignore obstacle(非KEEP_CLEAR 动态obstacle与closest_static_obstacle)的集合<obstacle_id, STBoundary>
-  std::unordered_map<std::string, ObjectDecisionType> obs_id_to_decision_;
+  std::unordered_map<std::string, ObjectDecisionType> obs_id_to_decision_;      // 包含当前时刻t时, 用于决策的目标的<id, decision info>
 
   std::vector<std::tuple<std::string, STBoundary, Obstacle*>>
       candidate_clear_zones_;       // KEEP_CLEAR obstacle的集合: <obstacle_id, STBoundary, obstacle_pointer>

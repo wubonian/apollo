@@ -49,19 +49,24 @@ void STGuideLine::Init(
   }
 }
 
+/* 计算STGuideLine在给定时间t对应的s */
 double STGuideLine::GetGuideSFromT(double t) {
   common::SpeedPoint speed_point;
+  // 如果有guideline_speed_data_, 则基于guideline插值得到
   if (t < guideline_speed_data_.TotalTime() &&
       guideline_speed_data_.EvaluateByTime(t, &speed_point)) {
     s0_ = speed_point.s();
     t0_ = t;
     return speed_point.s();
   }
+  // 否则返回s0_ + (t-t0_) * v0_
   return s0_ + (t - t0_) * v0_;
 }
 
+/* 更新STGuideLine内部状态 */
 void STGuideLine::UpdateBlockingInfo(const double t, const double s_block,
                                      const bool is_lower_block) {
+  // 如果当前时刻计算得到的距离s 偏离了s_block, 则将s0_更新为s_block, 并将t0_重置
   if (is_lower_block) {
     if (GetGuideSFromT(t) < s_block) {
       s0_ = s_block;

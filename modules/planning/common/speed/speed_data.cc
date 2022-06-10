@@ -56,6 +56,7 @@ void SpeedData::AppendSpeedPoint(const double s, const double time,
   push_back(common::util::PointFactory::ToSpeedPoint(s, time, v, a, da));
 }
 
+/* 基于SpeedData内部存储的多个SpeedPoint, 通过线性插值, 得到当前时刻的speed_point */
 bool SpeedData::EvaluateByTime(const double t,
                                common::SpeedPoint* const speed_point) const {
   if (size() < 2) {
