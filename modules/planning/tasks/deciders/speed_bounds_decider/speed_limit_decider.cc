@@ -43,6 +43,7 @@ SpeedLimitDecider::SpeedLimitDecider(const SpeedBoundsDeciderConfig& config,
       vehicle_param_(common::VehicleConfigHelper::GetConfig().vehicle_param()) {
 }
 
+/* 计算speed limit信息, 地图限速, 横向加速度限速, nudge限速 */
 Status SpeedLimitDecider::GetSpeedLimits(
     const IndexedList<std::string, Obstacle>& obstacles,
     SpeedLimit* const speed_limit_data) const {
@@ -51,6 +52,7 @@ Status SpeedLimitDecider::GetSpeedLimits(
   const auto& discretized_path = path_data_.discretized_path();
   const auto& frenet_path = path_data_.frenet_frame_path();
 
+  // 遍历生成的SL Path
   for (uint32_t i = 0; i < discretized_path.size(); ++i) {
     const double path_s = discretized_path.at(i).s();
     const double reference_line_s = frenet_path.at(i).s();
@@ -67,6 +69,7 @@ Status SpeedLimitDecider::GetSpeedLimits(
 
     // (2) speed limit from path curvature
     //  -- 2.1: limit by centripetal force (acceleration)
+    // 计算基于横向加速度得到的speed limit
     const double speed_limit_from_centripetal_acc =
         std::sqrt(speed_bounds_config_.max_centric_acceleration_limit() /
                   std::fmax(std::fabs(discretized_path.at(i).kappa()),
@@ -79,6 +82,8 @@ Status SpeedLimitDecider::GetSpeedLimits(
         std::numeric_limits<double>::max();
     const double collision_safety_range =
         speed_bounds_config_.collision_safety_range();
+    
+    // 计算nudge obstacle对应的speed limit信息
     for (const auto* ptr_obstacle : obstacles.Items()) {
       if (ptr_obstacle->IsVirtual()) {
         continue;
@@ -105,11 +110,13 @@ Status SpeedLimitDecider::GetSpeedLimits(
       const double obstacle_back_s =
           ptr_obstacle->PerceptionSLBoundary().start_s();
 
+      // in case vehicle is not parrallel to nudge target obstacle, ignore
       if (vehicle_front_s < obstacle_back_s ||
           vehicle_back_s > obstacle_front_s) {
         continue;
       }
 
+      // in case vehicle is parallel to nudge target obstacle
       const auto& nudge_decision = ptr_obstacle->LateralDecision().nudge();
 
       // Please notice the differences between adc_l and frenet_point_l
@@ -130,6 +137,8 @@ Status SpeedLimitDecider::GetSpeedLimits(
            frenet_point_l + vehicle_param_.left_edge_to_center());
 
       // TODO(all): dynamic obstacles do not have nudge decision
+      // calculate a punish speed ratio on given speed_limit_from_reference_line
+      // in case ego vehicle is close to left/right nudge vehicle
       if (is_close_on_left || is_close_on_right) {
         double nudge_speed_ratio = 1.0;
         if (ptr_obstacle->IsStatic()) {
@@ -146,6 +155,7 @@ Status SpeedLimitDecider::GetSpeedLimits(
     }
 
     double curr_speed_limit = 0.0;
+    // 基于map, 横向加速度, nearby vehicle, 计算对应的speed limit
     if (FLAGS_enable_nudge_slowdown) {
       curr_speed_limit =
           std::fmax(speed_bounds_config_.lowest_speed(),
@@ -158,6 +168,7 @@ Status SpeedLimitDecider::GetSpeedLimits(
                     std::min({speed_limit_from_reference_line,
                               speed_limit_from_centripetal_acc}));
     }
+    // 设置当前位置的speed_limit
     speed_limit_data->AppendSpeedLimit(path_s, curr_speed_limit);
   }
   return Status::OK();

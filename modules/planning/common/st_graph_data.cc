@@ -27,6 +27,7 @@ namespace planning {
 
 using apollo::common::TrajectoryPoint;
 
+/* 将输入设置到StGraphData的内部变量中 */
 void StGraphData::LoadData(const std::vector<const STBoundary*>& st_boundaries,
                            const double min_s_on_st_boundaries,
                            const apollo::common::TrajectoryPoint& init_point,

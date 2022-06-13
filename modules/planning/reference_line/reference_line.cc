@@ -796,12 +796,14 @@ std::string ReferenceLine::DebugString() const {
                     apollo::common::util::DebugStringFormatter()));
 }
 
+/* 返回给定位置s处, reference_line存储的speed limit信息 */
 double ReferenceLine::GetSpeedLimitFromS(const double s) const {
   for (const auto& speed_limit : speed_limit_) {
     if (s >= speed_limit.start_s && s <= speed_limit.end_s) {
       return speed_limit.speed_limit;
     }
   }
+  
   const auto& map_path_point = GetReferencePoint(s);
 
   double speed_limit = FLAGS_planning_upper_speed_limit;

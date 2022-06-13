@@ -71,17 +71,24 @@ class StGraphData {
 
  private:
   bool init_ = false;
-  std::vector<const STBoundary*> st_boundaries_;
-  double min_s_on_st_boundaries_ = 0.0;
-  apollo::common::TrajectoryPoint init_point_;
-  SpeedLimit speed_limit_;
-  double cruise_speed_ = 0.0;
+  std::vector<const STBoundary*> st_boundaries_;      // 在SpeedBoundsDecider中更新, 包含每个obstacle的ST Boundary
+                                                      // <id_, BoundaryType, upper_points_, lower_points_, other>
+  
+  double min_s_on_st_boundaries_ = 0.0;           // ST图上当前最近的障碍物距离(fallback distance), 作为安全距离
+
+  apollo::common::TrajectoryPoint init_point_;        // 在SpeedBoundsDecider中更新, 包含规划的起点
+
+  SpeedLimit speed_limit_;          // 在SpeedBoundsDecider中更新, 包含每个位置s对应的speed_limit
+                                    // speed limit包含道路, 曲率, nudge对应的限速信息
+
+  double cruise_speed_ = 0.0;       // 在SpeedBoundsDecider中更新, 包含cruise_speed信息
   double path_data_length_ = 0.0;
   double path_length_by_conf_ = 0.0;
   double total_time_by_conf_ = 0.0;
   planning_internal::STGraphDebug* st_graph_debug_ = nullptr;
 
-  STDrivableBoundary st_drivable_boundary_;
+  STDrivableBoundary st_drivable_boundary_;   // 在STBoundsDecider中更新, 包含决策后自车在ST图上可通行的位置, 速度区间
+                                              // <t, s_lower, s_upper, v_obs_lower, v_obs_upper>
 };
 
 }  // namespace planning

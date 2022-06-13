@@ -62,7 +62,9 @@ STBoundaryMapper::STBoundaryMapper(
       planning_max_time_(planning_time),
       injector_(injector) {}
 
-/* 遍历每个障碍物, 生成对应的ST Boundary, 以及BoundaryType */
+/* 遍历path_decision中每个obstacle, 更新它的STBoundary:
+   -> use_st_drivable_boundary = true: 直接沿用StBoundsDecider决策时生成的STBoundary
+   -> 基于决策结果, 重新生成每个obstacle的STBoundary */
 Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
   // Sanity checks.
   CHECK_GT(planning_max_time_, 0.0);
@@ -84,7 +86,9 @@ Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
     ACHECK(ptr_obstacle != nullptr);
 
     // If no longitudinal decision has been made, then plot it onto ST-graph.
+    
     // 将没有longitudinal decision的目标映射到ST图上, 但没有BoundaryType
+    // 如果FLAGS_use_st_drivable_boundary置位, 则使用STBoundsDecider的结果, 这里调用的ComputeSTBoundary不做任何处理
     if (!ptr_obstacle->HasLongitudinalDecision()) {
       ComputeSTBoundary(ptr_obstacle);
       continue;
@@ -106,12 +110,14 @@ Status STBoundaryMapper::ComputeSTBoundary(PathDecision* path_decision) const {
         min_stop_s = stop_s;      // 最近的stop decision的距离
         stop_decision = decision;     // 最近的stop decision的状态
       }
-    } 
+    }
+     
     // 如果目标已经有follow, overtake, yield这三种decision
     else if (decision.has_follow() || decision.has_overtake() ||
                decision.has_yield()) {
       // 2. Depending on the longitudinal overtake/yield decision,
       //    fine-tune the upper/lower st-boundary of related obstacles.
+      // 更新path_decision中每个obstacle的STBoundary
       ComputeSTBoundaryWithDecision(ptr_obstacle, decision);
     } else if (!decision.has_ignore()) {
       // 3. Ignore those unrelated obstacles.
@@ -176,6 +182,7 @@ bool STBoundaryMapper::MapStopDecision(
 /* 对于没有做过纵向决策的obstacle, 将其投影到ST平面上, 生成对应的boundary
    -> 对于新生成的Boundary, 没有对应的BoundaryType */
 void STBoundaryMapper::ComputeSTBoundary(Obstacle* obstacle) const {
+  // 如果使用STBoundsDecider的决策和生成的Boundary, 则直接返回
   if (FLAGS_use_st_drivable_boundary) {
     return;
   }
@@ -379,7 +386,9 @@ bool STBoundaryMapper::GetOverlapBoundaryPoints(
   return (lower_points->size() > 1 && upper_points->size() > 1);
 }
 
-/* 在obstacle已经有follow/yield/overtake的decision时, 计算对应的ST Boundary */
+/* 在obstacle已经有follow/yield/overtake的decision时, 更新path_decision中每个obstacle的STBoundary:
+   -> option 1: 直接沿用StBoundsDecider中计算得到的每个obstacle的STBoundary
+   -> option 2: 重新进行obstacle trajectory到ST图的映射, 得到每个obstacle的STBoundary */
 void STBoundaryMapper::ComputeSTBoundaryWithDecision(
     Obstacle* obstacle, const ObjectDecisionType& decision) const {
   DCHECK(decision.has_follow() || decision.has_yield() ||

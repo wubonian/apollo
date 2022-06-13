@@ -48,7 +48,10 @@ SpeedBoundsDecider::SpeedBoundsDecider(
   speed_bounds_config_ = config.speed_bounds_decider_config();
 }
 
-/*  */
+/* SpeedBoundsDecider主执行函数:
+   -> 根据path_decision的决策, 将每个obstacle的STBoundary返回到boundaries中
+   -> 计算ST图中, 每个位置点s处的速度限制speed_limit
+   -> 将STBoundary与speed_limit设置到reference_lint_info的StGraphData中 */
 Status SpeedBoundsDecider::Process(
     Frame *const frame, ReferenceLineInfo *const reference_line_info) {
   // retrieve data from frame and reference_line_info
@@ -63,12 +66,16 @@ Status SpeedBoundsDecider::Process(
       speed_bounds_config_, reference_line, path_data,
       path_data.discretized_path().Length(), speed_bounds_config_.total_time(),
       injector_);
-  // 如果该值为false, 清除之前计算的st_boundary
+  // 如果该值为false, 则不使用STBoundsDecider的结果, 清除之前计算的st_boundary
   if (!FLAGS_use_st_drivable_boundary) {
     path_decision->EraseStBoundaries();
   }
 
   // 更新计算每个obstacle的STBoundary以及对应的BoundaryType
+  // 基于path_decision的结果, 生成每个obstacle的ST Boundary以及对应的BoundaryType, 
+  // 将结果提取到boundaries, 并更新到reference_line_info中的StGraphData中
+  // option 1: 直接使用StBoundsDecider决策时生成的每个obstacle的ST Boundary
+  // option 2: 基于决策, 重新计算每个obstacle的STBoundary
   if (boundary_mapper.ComputeSTBoundary(path_decision).code() ==
       ErrorCode::PLANNING_ERROR) {
     const std::string msg = "Mapping obstacle failed.";
@@ -82,6 +89,7 @@ Status SpeedBoundsDecider::Process(
 
   std::vector<const STBoundary *> boundaries;
   // 剔除掉BoundaryType为KEEP_CLEAR的obstacle, 以及对应的boundary
+  // 将path_decision中的ST boundary导出到boundaries中
   for (auto *obstacle : path_decision->obstacles().Items()) {
     const auto &id = obstacle->Id();
     const auto &st_boundary = obstacle->path_st_boundary();
@@ -95,6 +103,7 @@ Status SpeedBoundsDecider::Process(
     }
   }
 
+  // 返回当前时刻最近障碍物的s距离作为fall-back distance (安全距离)
   const double min_s_on_st_boundaries = SetSpeedFallbackDistance(path_decision);
 
   // 2. Create speed limit along path
@@ -102,6 +111,8 @@ Status SpeedBoundsDecider::Process(
                                         path_data);
 
   SpeedLimit speed_limit;
+  // 基于地图, 道路曲率, nudge, 计算path上每个点的speed limit信息
+  // 后续将计算得到的speed limit信息更新到reference_line_info的StGraphData中
   if (!speed_limit_decider
            .GetSpeedLimits(path_decision->obstacles(), &speed_limit)
            .ok()) {
@@ -124,6 +135,7 @@ Status SpeedBoundsDecider::Process(
   auto *debug = reference_line_info_->mutable_debug();
   STGraphDebug *st_graph_debug = debug->mutable_planning_data()->add_st_graph();
 
+  // 将结果设置到st_graph_data的内部变量中
   st_graph_data->LoadData(boundaries, min_s_on_st_boundaries, init_point,
                           speed_limit, reference_line_info->GetCruiseSpeed(),
                           path_data_length, total_time_by_conf, st_graph_debug);
@@ -134,13 +146,15 @@ Status SpeedBoundsDecider::Process(
   return Status::OK();
 }
 
+/* 返回当前时刻, 最近的障碍物距离作为fall-back distance (自车预留的安全区间) */
 double SpeedBoundsDecider::SetSpeedFallbackDistance(
     PathDecision *const path_decision) {
   // Set min_s_on_st_boundaries to guide speed fallback.
   static constexpr double kEpsilon = 1.0e-6;
-  double min_s_non_reverse = std::numeric_limits<double>::infinity();
-  double min_s_reverse = std::numeric_limits<double>::infinity();
+  double min_s_non_reverse = std::numeric_limits<double>::infinity();     // 表示同向dynamic obstacle在ST图投影的最近点
+  double min_s_reverse = std::numeric_limits<double>::infinity();       // 表示对向dynamic obstacle在ST图投影的最近点
 
+  // 遍历每一个path_decision中的obstacle
   for (auto *obstacle : path_decision->obstacles().Items()) {
     const auto &st_boundary = obstacle->path_st_boundary();
 
@@ -164,9 +178,11 @@ double SpeedBoundsDecider::SetSpeedFallbackDistance(
   min_s_reverse = std::max(min_s_reverse, 0.0);
   min_s_non_reverse = std::max(min_s_non_reverse, 0.0);
 
+  // 如果同向的最小s 大于 对向的最小s, 则返回0.0, 否则返回同向的最小s
   return min_s_non_reverse > min_s_reverse ? 0.0 : min_s_non_reverse;
 }
 
+/* 导入debug信息 */
 void SpeedBoundsDecider::RecordSTGraphDebug(
     const StGraphData &st_graph_data, STGraphDebug *st_graph_debug) const {
   if (!FLAGS_enable_record_debug || !st_graph_debug) {
