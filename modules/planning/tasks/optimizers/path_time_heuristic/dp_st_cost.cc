@@ -33,6 +33,7 @@ namespace {
 constexpr double kInf = std::numeric_limits<double>::infinity();
 }
 
+/* DpStCost初始化函数 */
 DpStCost::DpStCost(const DpStSpeedOptimizerConfig& config, const double total_t,
                    const double total_s,
                    const std::vector<const Obstacle*>& obstacles,
@@ -45,23 +46,30 @@ DpStCost::DpStCost(const DpStSpeedOptimizerConfig& config, const double total_t,
       unit_t_(config.unit_t()),
       total_s_(total_s) {
   int index = 0;
+  // 设置每个obstacle id对应的index到boundary_map_中
   for (const auto& obstacle : obstacles) {
     boundary_map_[obstacle->path_st_boundary().id()] = index++;
   }
 
   AddToKeepClearRange(obstacles);
 
+  // dimension_t为t的采样个数
   const auto dimension_t =
       static_cast<uint32_t>(std::ceil(total_t / static_cast<double>(unit_t_))) +
       1;
+  // 初始化boundary_cost_与obstacles_的size相同
   boundary_cost_.resize(obstacles_.size());
+  // 初始化每个obstacle的boundary_cost_为维数为dimension_t的<-1.0, 1.0>
+  // 即对每个obstacle, 在每个时间t采样点, 对应的boundary_cost_值为<-1.0, 1.0>
   for (auto& vec : boundary_cost_) {
     vec.resize(dimension_t, std::make_pair(-1.0, -1.0));
   }
-  accel_cost_.fill(-1.0);
+  // 初始化accel_cost_, jerk_cost_
+  accel_cost_.fill(-1.0);         // 初始化所有的accel_cost_ && jerk_cost_为-1.0
   jerk_cost_.fill(-1.0);
 }
 
+/* 将所有KEEP_CLEAR obstacle的<start_s, end_s>存放在keep_clear_range_内 */
 void DpStCost::AddToKeepClearRange(
     const std::vector<const Obstacle*>& obstacles) {
   for (const auto& obstacle : obstacles) {
@@ -80,6 +88,7 @@ void DpStCost::AddToKeepClearRange(
   SortAndMergeRange(&keep_clear_range_);
 }
 
+/*  */
 void DpStCost::SortAndMergeRange(
     std::vector<std::pair<double, double>>* keep_clear_range) {
   if (!keep_clear_range || keep_clear_range->empty()) {
@@ -110,12 +119,18 @@ bool DpStCost::InKeepClearRange(double s) const {
   return false;
 }
 
+/* 计算采样点st_graph_point在ST图中的距离cost
+   -> 与obstacle重叠 或 不在StBoundsDecider计算的ST可通行区域内, 直接设置cost为无限大
+   -> 在可通行区域内时, 如果follow或者overtake的过近, 则会根据与follow/overtake target distance的偏差, 计算对应的cost
+   -> 满足该target distance阈值要求, 则没有cost */
 double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
-  const double s = st_graph_point.point().s();
-  const double t = st_graph_point.point().t();
+  const double s = st_graph_point.point().s();    // 提取st_graph_point的s
+  const double t = st_graph_point.point().t();    // 提取st_graph_point的t
 
   double cost = 0.0;
 
+  // FLAGS_use_st_drivable_boundary = true: 直接使用StBoundsDecider计算得到的st_driverable_boundary_
+  // (经过obstacle纵向决策后, 得到的ST图的可通行区域)来筛除位于可通行区域以外的采样点 (返回cost为无穷大)
   if (FLAGS_use_st_drivable_boundary) {
     // TODO(Jiancheng): move to configs
     static constexpr double boundary_resolution = 0.1;
@@ -125,11 +140,13 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
     const double upper_bound =
         st_drivable_boundary_.st_boundary(index).s_upper();
 
+    // 如果当前采样点的s位于st_driverable_boundary_以外, 则设置cost为无穷大
     if (s > upper_bound || s < lower_bound) {
       return kInf;
     }
   }
 
+  // 遍历所有的obstacle
   for (const auto* obstacle : obstacles_) {
     // Not applying obstacle approaching cost to virtual obstacle like created
     // stop fences
@@ -140,33 +157,48 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
     // Stop obstacles are assumed to have a safety margin when mapping them out,
     // so repelling force in dp st is not needed as it is designed to have adc
     // stop right at the stop distance we design in prior mapping process
+    // 跳过stop obstacle, 只对动态目标进行处理
     if (obstacle->LongitudinalDecision().has_stop()) {
       continue;
     }
 
+    // 提取目标的st_boundary (在StBoundsDecider/SpeedBoundsDecider里计算得到)
     auto boundary = obstacle->path_st_boundary();
 
+    // 如果目标的纵向距离过远, 略过
     if (boundary.min_s() > FLAGS_speed_lon_decision_horizon) {
       continue;
     }
+    // 如果当前采样点的时间t在obstacle STBoundary的时间范围以外, 略过
     if (t < boundary.min_t() || t > boundary.max_t()) {
       continue;
     }
+    // 如果当前采样点位于obstacle的STBoundary以内, 则返回cost为无穷大
     if (boundary.IsPointInBoundary(st_graph_point.point())) {
       return kInf;
     }
     double s_upper = 0.0;
     double s_lower = 0.0;
-
+    // 得到obstacle在dp_st_cost中存储的index
     int boundary_index = boundary_map_[boundary.id()];
+    // 如果boundary_index对应的目标在第index_t个时间采样点的boundary_cost_值小于0
+    // 表示该目标的对应时间处的boundary_cost_还没有初始化
     if (boundary_cost_[boundary_index][st_graph_point.index_t()].first < 0.0) {
+      // 计算该时间处的S的上下边界<s_lower, s_upper>
       boundary.GetBoundarySRange(t, &s_upper, &s_lower);
+      // 设置对应的boundary_cost_值为<s_upper, s_lower>
       boundary_cost_[boundary_index][st_graph_point.index_t()] =
           std::make_pair(s_upper, s_lower);
-    } else {
+    } 
+    // 如果该目标对应t位置的boundary_cost_ <s_upper, s_lower>已经初始化, 则直接提取对应的上下边界值
+    else {
       s_upper = boundary_cost_[boundary_index][st_graph_point.index_t()].first;
       s_lower = boundary_cost_[boundary_index][st_graph_point.index_t()].second;
     }
+    // 如果采样点的s < s_lower
+    // 如果s位于s_lower以下follow distance以内 (跟的过近), 则设置对应的距离cost为
+    // obstacle_weight * default_obstacle_cost * (s_diff)^2
+    // s_diff为超出follow_distance的距离
     if (s < s_lower) {
       const double follow_distance_s = config_.safe_distance();
       if (s + follow_distance_s < s_lower) {
@@ -176,7 +208,10 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
         cost += config_.obstacle_weight() * config_.default_obstacle_cost() *
                 s_diff * s_diff;
       }
-    } else if (s > s_upper) {
+    }
+    // 如果采样点的s > s_upper
+    // 如果s的overtake距离过近, 类似的计算对应的距离cost
+    else if (s > s_upper) {
       const double overtake_distance_s =
           StGapEstimator::EstimateSafeOvertakingGap();
       if (s > s_upper + overtake_distance_s) {  // or calculated from velocity
@@ -188,9 +223,13 @@ double DpStCost::GetObstacleCost(const StGraphPoint& st_graph_point) {
       }
     }
   }
+  // 最终计算得到的cost为与目标距离cost * unit_t_
+  // 包含的信息为: 当前采样点的s在t时, 与所有目标的距离cost (follow的过近/overtake的过近都会增加cost)
+  // 计算cost的距离threshold为target follow distance与overtake distance
   return cost * unit_t_;
 }
 
+/* 计算空间potential的cost: s越大, cost越小 */
 double DpStCost::GetSpatialPotentialCost(const StGraphPoint& point) {
   return (total_s_ - point.point().s()) * config_.spatial_potential_penalty();
 }
@@ -201,11 +240,17 @@ double DpStCost::GetReferenceCost(const STPoint& point,
          (point.s() - reference_point.s()) * unit_t_;
 }
 
+/* 计算first->second对应的速度, 以及产生的速度cost:
+   -> 停止在Keep-Clear范围内
+   -> speed_limit: 超过speed_limit产生较大的cost, 小于speed_limit产生较小的cost
+   -> cruise_speed: 不满足巡航速度, 产生cost */
 double DpStCost::GetSpeedCost(const STPoint& first, const STPoint& second,
                               const double speed_limit,
                               const double cruise_speed) const {
   double cost = 0.0;
+  // 计算first -> second的速度
   const double speed = (second.s() - first.s()) / unit_t_;
+  // 如果速度为负, 则返回速度cost为无限大
   if (speed < 0) {
     return kInf;
   }
@@ -214,6 +259,8 @@ double DpStCost::GetSpeedCost(const STPoint& first, const STPoint& second,
                                         ->GetConfig()
                                         .vehicle_param()
                                         .max_abs_speed_when_stopped();
+  // 如果速度为0且处于KeepClear范围 -> 停车在了keep clear范围内
+  // 叠加对应的cost
   if (speed < max_adc_stop_speed && InKeepClearRange(second.s())) {
     // first.s in range
     cost += config_.keep_clear_low_speed_penalty() * unit_t_ *
@@ -221,14 +268,18 @@ double DpStCost::GetSpeedCost(const STPoint& first, const STPoint& second,
   }
 
   double det_speed = (speed - speed_limit) / speed_limit;
+  // 超过speed_limit, 计算对应的cost
   if (det_speed > 0) {
     cost += config_.exceed_speed_penalty() * config_.default_speed_cost() *
             (det_speed * det_speed) * unit_t_;
-  } else if (det_speed < 0) {
+  } 
+  // 达不到speed_limit, 也会增加一些cost -> 防止一直维持在低速, 提高通行效率
+  else if (det_speed < 0) {
     cost += config_.low_speed_penalty() * config_.default_speed_cost() *
             -det_speed * unit_t_;
   }
 
+  // 对与reference_speed的偏差进行惩罚
   if (FLAGS_enable_dp_reference_speed) {
     double diff_speed = speed - cruise_speed;
     cost += config_.reference_speed_penalty() * config_.default_speed_cost() *
@@ -238,16 +289,19 @@ double DpStCost::GetSpeedCost(const STPoint& first, const STPoint& second,
   return cost;
 }
 
+/* 计算给定accel对应的cost: accel幅值的cost + 与accel_limit偏差的cost */
 double DpStCost::GetAccelCost(const double accel) {
   double cost = 0.0;
   static constexpr double kEpsilon = 0.1;
   static constexpr size_t kShift = 100;
+  // 计算当前accel在accel_cost_的vector中对应的index: accel_key
   const size_t accel_key = static_cast<size_t>(accel / kEpsilon + 0.5 + kShift);
   DCHECK_LT(accel_key, accel_cost_.size());
   if (accel_key >= accel_cost_.size()) {
     return kInf;
   }
 
+  // 如果accel_cost_在accel_key处还没有初始化
   if (accel_cost_.at(accel_key) < 0.0) {
     const double accel_sq = accel * accel;
     double max_acc = config_.max_acceleration();
@@ -255,6 +309,7 @@ double DpStCost::GetAccelCost(const double accel) {
     double accel_penalty = config_.accel_penalty();
     double decel_penalty = config_.decel_penalty();
 
+    // accel绝对值对应的cost + accel相对于max_acc/max_dec的cost
     if (accel > 0.0) {
       cost = accel_penalty * accel_sq;
     } else {
@@ -265,12 +320,15 @@ double DpStCost::GetAccelCost(const double accel) {
             accel_sq * accel_penalty * accel_penalty /
                 (1 + std::exp(-1.0 * (accel - max_acc)));
     accel_cost_.at(accel_key) = cost;
-  } else {
+  } 
+  // 如果该accel的cost已经更新过, 则直接返回对应的cost值
+  else {
     cost = accel_cost_.at(accel_key);
   }
   return cost * unit_t_;
 }
 
+/* 基于三个点first -> second -> third, 计算对应的加速度以及accel_cost */
 double DpStCost::GetAccelCostByThreePoints(const STPoint& first,
                                            const STPoint& second,
                                            const STPoint& third) {
@@ -278,6 +336,7 @@ double DpStCost::GetAccelCostByThreePoints(const STPoint& first,
   return GetAccelCost(accel);
 }
 
+/* 计算pre_point->curr_point对应的加速度, 并更新accel cost */
 double DpStCost::GetAccelCostByTwoPoints(const double pre_speed,
                                          const STPoint& pre_point,
                                          const STPoint& curr_point) {
@@ -286,6 +345,7 @@ double DpStCost::GetAccelCostByTwoPoints(const double pre_speed,
   return GetAccelCost(accel);
 }
 
+/* 计算jerk的cost (只考虑cost的绝对值) */
 double DpStCost::JerkCost(const double jerk) {
   double cost = 0.0;
   static constexpr double kEpsilon = 0.1;
@@ -295,6 +355,8 @@ double DpStCost::JerkCost(const double jerk) {
     return kInf;
   }
 
+  // 如果对应jerk值的cost没有更新, 则计算对应的cost值
+  // cost = k * jerk^2
   if (jerk_cost_.at(jerk_key) < 0.0) {
     double jerk_sq = jerk * jerk;
     if (jerk > 0) {
@@ -311,6 +373,7 @@ double DpStCost::JerkCost(const double jerk) {
   return cost;
 }
 
+/* 基于4个点计算jerk与对应的cost */
 double DpStCost::GetJerkCostByFourPoints(const STPoint& first,
                                          const STPoint& second,
                                          const STPoint& third,
@@ -320,6 +383,7 @@ double DpStCost::GetJerkCostByFourPoints(const STPoint& first,
   return JerkCost(jerk);
 }
 
+/* 基于两个点计算jerk, 随后计算jerk对应的cost */
 double DpStCost::GetJerkCostByTwoPoints(const double pre_speed,
                                         const double pre_acc,
                                         const STPoint& pre_point,
@@ -330,6 +394,7 @@ double DpStCost::GetJerkCostByTwoPoints(const double pre_speed,
   return JerkCost(jerk);
 }
 
+/* 基于三个点计算jerk以及对应的cost */
 double DpStCost::GetJerkCostByThreePoints(const double first_speed,
                                           const STPoint& first,
                                           const STPoint& second,

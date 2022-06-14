@@ -38,6 +38,7 @@ PathTimeHeuristicOptimizer::PathTimeHeuristicOptimizer(const TaskConfig& config)
   speed_heuristic_optimizer_config_ = config.speed_heuristic_optimizer_config();
 }
 
+/* 离散化ST图, 更新每个离散点的cost, 并进行DP优化, 返回DP优化的结果speed_data */
 bool PathTimeHeuristicOptimizer::SearchPathTimeGraph(
     SpeedData* speed_data) const {
   const auto& dp_st_speed_optimizer_config =
@@ -45,10 +46,12 @@ bool PathTimeHeuristicOptimizer::SearchPathTimeGraph(
           ? speed_heuristic_optimizer_config_.lane_change_speed_config()
           : speed_heuristic_optimizer_config_.default_speed_config();
 
+  // 初始化DP优化的类GriddedPathTimeGraph
   GriddedPathTimeGraph st_graph(
       reference_line_info_->st_graph_data(), dp_st_speed_optimizer_config,
       reference_line_info_->path_decision()->obstacles().Items(), init_point_);
 
+  // 执行DP优化
   if (!st_graph.Search(speed_data).ok()) {
     AERROR << "failed to search graph with dynamic programming.";
     return false;
@@ -56,17 +59,20 @@ bool PathTimeHeuristicOptimizer::SearchPathTimeGraph(
   return true;
 }
 
+/* PathTimeHeuristicOptimizer主执行函数 */
 Status PathTimeHeuristicOptimizer::Process(
     const PathData& path_data, const common::TrajectoryPoint& init_point,
     SpeedData* const speed_data) {
   init_point_ = init_point;
 
+  // 合理性检查
   if (path_data.discretized_path().empty()) {
     const std::string msg = "Empty path data";
     AERROR << msg;
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
 
+  // 离散化ST图, 更新每个离散点的cost, 并进行DP优化, 返回DP优化的结果speed_data
   if (!SearchPathTimeGraph(speed_data)) {
     const std::string msg = absl::StrCat(
         Name(), ": Failed to search graph with dynamic programming.");
@@ -75,6 +81,7 @@ Status PathTimeHeuristicOptimizer::Process(
                                      ->mutable_st_graph_debug());
     return Status(ErrorCode::PLANNING_ERROR, msg);
   }
+  // 记录debug信息
   RecordDebugInfo(
       *speed_data,
       reference_line_info_->mutable_st_graph_data()->mutable_st_graph_debug());

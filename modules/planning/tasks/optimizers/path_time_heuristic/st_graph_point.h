@@ -63,13 +63,14 @@ class StGraphPoint {
 
  private:
   STPoint point_;
-  const StGraphPoint* pre_point_ = nullptr;
-  std::uint32_t index_s_ = 0;
-  std::uint32_t index_t_ = 0;
+  const StGraphPoint* pre_point_ = nullptr;     // 对应的<s, t>坐标
+  std::uint32_t index_s_ = 0;     // s index
+  std::uint32_t index_t_ = 0;     // t index
 
   double optimal_speed_ = 0.0;
   double reference_cost_ = 0.0;
-  double obstacle_cost_ = 0.0;
+  double obstacle_cost_ = 0.0;      // 与所有obstalce follow/overtake过近产生的距离cost
+                                    // 如果满足follow/overtake的距离阈值, 则cost为0
   double spatial_potential_cost_ = 0.0;
   double total_cost_ = std::numeric_limits<double>::infinity();
 };

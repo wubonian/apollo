@@ -40,6 +40,7 @@
 namespace apollo {
 namespace planning {
 
+/* 完成速度的动态规划DP过程 */
 class GriddedPathTimeGraph {
  public:
   GriddedPathTimeGraph(const StGraphData& st_graph_data,
@@ -84,9 +85,9 @@ class GriddedPathTimeGraph {
  private:
   const StGraphData& st_graph_data_;
 
-  std::vector<double> speed_limit_by_index_;
+  std::vector<double> speed_limit_by_index_;      // 每个s采样点对应的限速信息(map, 横向加速度, 静态障碍物nudge限速)
 
-  std::vector<double> spatial_distance_by_index_;
+  std::vector<double> spatial_distance_by_index_;   // 包含s的所有采样点
 
   // dp st configuration
   DpStSpeedOptimizerConfig gridded_path_time_graph_config_;
@@ -104,23 +105,23 @@ class GriddedPathTimeGraph {
   // cost utility with configuration;
   DpStCost dp_st_cost_;
 
-  double total_length_t_ = 0.0;
-  double unit_t_ = 0.0;
-  uint32_t dimension_t_ = 0;
+  double total_length_t_ = 0.0;     // t轴的总采样长度
+  double unit_t_ = 0.0;      // t轴的采样间隔
+  uint32_t dimension_t_ = 0;      // t轴的采样数
 
-  double total_length_s_ = 0.0;
-  double dense_unit_s_ = 0.0;
-  double sparse_unit_s_ = 0.0;
-  uint32_t dense_dimension_s_ = 0;
-  uint32_t sparse_dimension_s_ = 0;
-  uint32_t dimension_s_ = 0;
+  double total_length_s_ = 0.0;     // s轴的总采样长度
+  double dense_unit_s_ = 0.0;     // s轴的细采样间隔
+  double sparse_unit_s_ = 0.0;      // s轴的粗采样间隔
+  uint32_t dense_dimension_s_ = 0;      // s轴的细采样点个数
+  uint32_t sparse_dimension_s_ = 0;     // s轴的粗采样点个数
+  uint32_t dimension_s_ = 0;      // s轴的总采样点个数
 
-  double max_acceleration_ = 0.0;
-  double max_deceleration_ = 0.0;
+  double max_acceleration_ = 0.0;     // 最大纵向加速度
+  double max_deceleration_ = 0.0;     // 最大纵向减速度
 
   // cost_table_[t][s]
   // row: s, col: t --- NOTICE: Please do NOT change.
-  std::vector<std::vector<StGraphPoint>> cost_table_;
+  std::vector<std::vector<StGraphPoint>> cost_table_;     // dimension_t_ * dimension_s_ 的 StGraphPoint
 };
 
 }  // namespace planning

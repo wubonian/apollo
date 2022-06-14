@@ -36,6 +36,7 @@
 namespace apollo {
 namespace planning {
 
+/* 该类用于每个采样点的cost计算 */
 class DpStCost {
  public:
   DpStCost(const DpStSpeedOptimizerConfig& config, const double total_t,
@@ -89,13 +90,14 @@ class DpStCost {
   double unit_t_ = 0.0;
   double total_s_ = 0.0;
 
-  std::unordered_map<std::string, int> boundary_map_;
-  std::vector<std::vector<std::pair<double, double>>> boundary_cost_;
+  std::unordered_map<std::string, int> boundary_map_;     // <id, index>: 每个obstacle id对应的index
+  std::vector<std::vector<std::pair<double, double>>> boundary_cost_;   // 每个obstacle的每个采样时间t的boundary_cost_ <s_upper, s_lower>
+                                                                        // 默认为<-1.0, 1.0>
 
-  std::vector<std::pair<double, double>> keep_clear_range_;
+  std::vector<std::pair<double, double>> keep_clear_range_;     // 所有KEEP_CLEAR obstacle的<start_s, end_s> list
 
-  std::array<double, 200> accel_cost_;
-  std::array<double, 400> jerk_cost_;
+  std::array<double, 200> accel_cost_;    // 以0.1 m/s^2为间隔, 存储每个acceleration对应的cost, 可覆盖[-10.0, 10.0]m/s^2的范围
+  std::array<double, 400> jerk_cost_;     // 以0.1 m/s^3为间隔, 存储每个jerk对应的cost, 可覆盖[-20.0, 20.0]m/s^3的范围
 };
 
 }  // namespace planning

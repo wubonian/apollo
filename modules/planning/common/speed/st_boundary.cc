@@ -121,6 +121,7 @@ std::string STBoundary::TypeName(BoundaryType type) {
   return "UNKNOWN";
 }
 
+/* 基于对obstacle的决策与其STBoundary, 计算curr_time时, 自车可通行的上下边界<s_lower, s_upper> */
 bool STBoundary::GetUnblockSRange(const double curr_time, double* s_upper,
                                   double* s_lower) const {
   CHECK_NOTNULL(s_upper);
@@ -134,6 +135,7 @@ bool STBoundary::GetUnblockSRange(const double curr_time, double* s_upper,
 
   size_t left = 0;
   size_t right = 0;
+  // 提取当前时间curr_time对应的左右点的index
   if (!GetIndexRange(lower_points_, curr_time, &left, &right)) {
     AERROR << "Fail to get index range.";
     return false;
@@ -143,6 +145,8 @@ bool STBoundary::GetUnblockSRange(const double curr_time, double* s_upper,
     return true;
   }
 
+  // 线性插值计算curr_time处, obstacle STBoundary计算的upper/lower点的s值
+  // upper_cross_s && lower_cross_s
   const double r =
       (left == right
            ? 0.0
@@ -156,6 +160,7 @@ bool STBoundary::GetUnblockSRange(const double curr_time, double* s_upper,
       lower_points_[left].s() +
       r * (lower_points_[right].s() - lower_points_[left].s());
 
+  // 根据当前的决策, 更新当前时刻curr_time处, 由obstacle限制的上下边界s_upper & s_lower
   if (boundary_type_ == BoundaryType::STOP ||
       boundary_type_ == BoundaryType::YIELD ||
       boundary_type_ == BoundaryType::FOLLOW) {
@@ -245,21 +250,28 @@ bool STBoundary::GetBoundarySlopes(const double curr_time, double* ds_upper,
   return true;
 }
 
+/* 检查给定st_point是否在STBoundary对应的范围内 */
 bool STBoundary::IsPointInBoundary(const STPoint& st_point) const {
   if (st_point.t() <= min_t_ || st_point.t() >= max_t_) {
     return false;
   }
   size_t left = 0;
   size_t right = 0;
+
+  // 计算st_point的t对应的left&right index
   if (!GetIndexRange(lower_points_, st_point.t(), &left, &right)) {
     AERROR << "failed to get index range.";
     return false;
   }
+
+  // 检查st_point是否在(upper_points_[left], upper_points_[right])对应线段的上方
   const double check_upper = common::math::CrossProd(
       st_point, upper_points_[left], upper_points_[right]);
+  // 检查st_point是否在(lower_points_[left], lower_points_[right])对应线段的上方
   const double check_lower = common::math::CrossProd(
       st_point, lower_points_[left], lower_points_[right]);
-
+  
+  // 检查st_point是否在上下边界之间
   return (check_upper * check_lower < 0);
 }
 
@@ -475,6 +487,7 @@ void STBoundary::RemoveRedundantPoints(
   point_pairs->resize(i + 1);
 }
 
+/* get left & right index closest to intput t */
 bool STBoundary::GetIndexRange(const std::vector<STPoint>& points,
                                const double t, size_t* left,
                                size_t* right) const {
