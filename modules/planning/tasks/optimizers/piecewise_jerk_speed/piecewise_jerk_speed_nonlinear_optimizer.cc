@@ -53,6 +53,7 @@ PiecewiseJerkSpeedNonlinearOptimizer::PiecewiseJerkSpeedNonlinearOptimizer(
   ACHECK(config_.has_piecewise_jerk_nonlinear_speed_optimizer_config());
 }
 
+/* 速度轨迹的非线性优化 */
 Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
     const PathData& path_data, const TrajectoryPoint& init_point,
     SpeedData* const speed_data) {
@@ -72,6 +73,8 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
     return Status::OK();
   }
 
+  // setup优化问题以及优化边界, 对s边界, 考虑新增了s_soft_bounds_: 
+  // 在正常obstacle STBoundary基础上, 增加了跟车time-gap与overtake的lead距离
   const auto problem_setups_status =
       SetUpStatesAndBounds(path_data, *speed_data);
   if (!problem_setups_status.ok()) {
@@ -85,6 +88,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
 
   const auto qp_start = std::chrono::system_clock::now();
 
+  // 进行正常的QP速度规划, x_bounds_使用s_bounds_
   const auto qp_smooth_status =
       OptimizeByQP(speed_data, &distance, &velocity, &acceleration);
 
@@ -97,11 +101,13 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
     return qp_smooth_status;
   }
 
+  // 检查规划速度轨迹的初始速度是否超过speed_limit
   const bool speed_limit_check_status = CheckSpeedLimitFeasibility();
 
   if (speed_limit_check_status) {
     const auto curvature_smooth_start = std::chrono::system_clock::now();
 
+    // 对生成轨迹的curvature进行QP优化, 优化结果存储在smoothed_path_curvature_中
     const auto path_curvature_smooth_status = SmoothPathCurvature(path_data);
 
     const auto curvature_smooth_end = std::chrono::system_clock::now();
@@ -132,6 +138,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
 
     const auto nlp_start = std::chrono::system_clock::now();
 
+    // 执行非线性优化
     const auto nlp_smooth_status =
         OptimizeByNLP(&distance, &velocity, &acceleration);
 
@@ -165,6 +172,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
     if (velocity[i] < 0.0) {
       break;
     }
+    // 将非线性优化的结果填入到speed_data中
     speed_data->AppendSpeedPoint(
         distance[i], delta_t_ * i, velocity[i], acceleration[i],
         (acceleration[i] - acceleration[i - 1]) / delta_t_);
@@ -176,6 +184,8 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::Process(
   return Status::OK();
 }
 
+/* setup-up优化参数, 初始值, 以及boundary
+   -> 考虑了s_soft_bounds_: 在正常obstacle STBoundary基础上, 增加了跟车time-gap与overtake的lead距离 */
 Status PiecewiseJerkSpeedNonlinearOptimizer::SetUpStatesAndBounds(
     const PathData& path_data, const SpeedData& speed_data) {
   // Set st problem dimensions
@@ -209,6 +219,9 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SetUpStatesAndBounds(
   s_dddot_max_ = FLAGS_longitudinal_jerk_upper_bound;
 
   // Set s boundary
+  // 更新s的边界:
+  // -> s_bounds_: 基于obstacle的STBoundary, 生成的硬边界
+  // -> s_soft_bounds_: 在s_bounds_考虑了跟车time-gap以及overtake时额外的10m lead距离
   if (FLAGS_use_soft_bound_in_nonlinear_speed_opt) {
     s_bounds_.clear();
     s_soft_bounds_.clear();
@@ -226,12 +239,15 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SetUpStatesAndBounds(
           continue;
         }
         SpeedPoint sp;
+        // 根据boundary_type (decision结果), 生成s_lower/upper_bound, s_soft_lower/upper_bound
         switch (boundary->boundary_type()) {
           case STBoundary::BoundaryType::STOP:
+          // YIELD: s_upper_bound与s_soft_upper_bound一样
           case STBoundary::BoundaryType::YIELD:
             s_upper_bound = std::fmin(s_upper_bound, s_upper);
             s_soft_upper_bound = std::fmin(s_soft_upper_bound, s_upper);
             break;
+          // FOLLOW: s_upper_bound考虑了最小跟车距离, s_soft_upper_bound则在s_upper_bound基础上考虑了time-gap
           case STBoundary::BoundaryType::FOLLOW:
             s_upper_bound =
                 std::fmin(s_upper_bound, s_upper - FLAGS_follow_min_distance);
@@ -246,6 +262,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SetUpStatesAndBounds(
                           s_upper - FLAGS_follow_min_distance -
                               std::min(7.0, FLAGS_follow_time_buffer * sp.v()));
             break;
+          // OVERTAKE: s_lower_bound为正常值, s_soft_lower_bound在正常值上额外增加了10m
           case STBoundary::BoundaryType::OVERTAKE:
             s_lower_bound = std::fmax(s_lower_bound, s_lower);
             s_soft_lower_bound = std::fmax(s_soft_lower_bound, s_lower + 10.0);
@@ -260,10 +277,13 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SetUpStatesAndBounds(
         AERROR << msg;
         return Status(ErrorCode::PLANNING_ERROR, msg);
       }
+      // 更新s_bounds_与s_soft_bounds_
       s_soft_bounds_.emplace_back(s_soft_lower_bound, s_soft_upper_bound);
       s_bounds_.emplace_back(s_lower_bound, s_upper_bound);
     }
-  } else {
+  } 
+  // 普通的s_bounds_设定方式
+  else {
     s_bounds_.clear();
     // TODO(Jinyun): move to confs
     for (int i = 0; i < num_of_knots_; ++i) {
@@ -307,6 +327,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SetUpStatesAndBounds(
   return Status::OK();
 }
 
+/* 检查规划轨迹的初始速度是否超过speed_limit */
 bool PiecewiseJerkSpeedNonlinearOptimizer::CheckSpeedLimitFeasibility() {
   // a naive check on first point of speed limit
   static constexpr double kEpsilon = 1e-6;
@@ -319,6 +340,7 @@ bool PiecewiseJerkSpeedNonlinearOptimizer::CheckSpeedLimitFeasibility() {
   return true;
 }
 
+/* 对speed_limit进行QP优化, 将优化的结果存储在smoothed_speed_limit_中 */
 Status PiecewiseJerkSpeedNonlinearOptimizer::SmoothSpeedLimit() {
   // using piecewise_jerk_path to fit a curve of speed_ref
   // TODO(Hongyi): move smooth configs to gflags
@@ -370,6 +392,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SmoothSpeedLimit() {
   return Status::OK();
 }
 
+/* 对生成轨迹的curvature进行QP优化, 优化结果存储在smoothed_path_curvature_中 */
 Status PiecewiseJerkSpeedNonlinearOptimizer::SmoothPathCurvature(
     const PathData& path_data) {
   // using piecewise_jerk_path to fit a curve of path kappa profile
@@ -377,6 +400,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SmoothPathCurvature(
   const auto& cartesian_path = path_data.discretized_path();
   const double delta_s = 0.5;
   std::vector<double> path_curvature;
+  // 提取SL Path的每个点的curvature, 设置到path_curvature
   for (double path_s = cartesian_path.front().s();
        path_s < cartesian_path.back().s() + delta_s; path_s += delta_s) {
     const auto& path_point = cartesian_path.Evaluate(path_s);
@@ -427,6 +451,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::SmoothPathCurvature(
   return Status::OK();
 }
 
+/* 执行QP速度规划, 返回优化后的distance, velocity, acceleration */
 Status PiecewiseJerkSpeedNonlinearOptimizer::OptimizeByQP(
     SpeedData* const speed_data, std::vector<double>* distance,
     std::vector<double>* velocity, std::vector<double>* acceleration) {
@@ -472,6 +497,7 @@ Status PiecewiseJerkSpeedNonlinearOptimizer::OptimizeByQP(
   return Status::OK();
 }
 
+/* 进行非线性优化 */
 Status PiecewiseJerkSpeedNonlinearOptimizer::OptimizeByNLP(
     std::vector<double>* distance, std::vector<double>* velocity,
     std::vector<double>* acceleration) {

@@ -723,12 +723,14 @@ void ReferenceLineInfo::ExportVehicleSignal(
   SetTurnSignalBasedOnLaneTurnType(vehicle_signal);
 }
 
+/* 检查是否抵达终点Destination, 如果自车与终点的距离小于0.05m, 则返回true */
 bool ReferenceLineInfo::ReachedDestination() const {
   static constexpr double kDestinationDeltaS = 0.05;
   const double distance_destination = SDistanceToDestination();
   return distance_destination <= kDestinationDeltaS;
 }
 
+/* 计算destination到当前自车前保的距离 */
 double ReferenceLineInfo::SDistanceToDestination() const {
   double res = std::numeric_limits<double>::max();
   const auto* dest_ptr = path_decision_.Find(FLAGS_destination_obstacle_id);
