@@ -46,6 +46,7 @@ double StGapEstimator::EstimateSafeYieldingGap() {
 }
 
 // TODO(Jinyun): add more variables to overtaking gap calculation
+/* 计算lead_gap: max_spd * time_gap */
 double StGapEstimator::EstimateProperOvertakingGap(
     const double target_obs_speed, const double adc_speed) {
   const double overtake_distance_s =
@@ -55,12 +56,14 @@ double StGapEstimator::EstimateProperOvertakingGap(
 }
 
 // TODO(Jinyun): add more variables to follow gap calculation
+/* 计算follow gap = speed * time_gap */
 double StGapEstimator::EstimateProperFollowingGap(const double adc_speed) {
   return std::fmax(adc_speed * FLAGS_follow_time_buffer,
                    FLAGS_follow_min_distance);
 }
 
 // TODO(Jinyun): add more variables to yielding gap calculation
+/* constant yield gap */
 double StGapEstimator::EstimateProperYieldingGap() {
   return FLAGS_yield_distance;
 }
