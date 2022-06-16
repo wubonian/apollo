@@ -612,8 +612,8 @@ Status OnLanePlanning::Plan(
                            ptr_debug);
     }
   } else {
-    const auto* best_ref_info = frame_->FindDriveReferenceLineInfo();
-    const auto* target_ref_info = frame_->FindTargetReferenceLineInfo();
+    const auto* best_ref_info = frame_->FindDriveReferenceLineInfo();       // cost最低的reference_line_info
+    const auto* target_ref_info = frame_->FindTargetReferenceLineInfo();        // IsChangeLanePath()对应的reference_line_info
     if (!best_ref_info) {
       const std::string msg = "planner failed to make a driving plan";
       AERROR << msg;
@@ -625,10 +625,13 @@ Status OnLanePlanning::Plan(
     // Store current frame stitched path for possible speed fallback in next
     // frames
     DiscretizedPath current_frame_planned_path;
+    // 将stitching_trajectory的trajectory压入current_frame_planned_path中
     for (const auto& trajectory_point : stitching_trajectory) {
       current_frame_planned_path.push_back(trajectory_point.path_point());
     }
     const auto& best_ref_path = best_ref_info->path_data().discretized_path();
+    // 将best_ref_path压入到current_frame_planned_path中
+    // current_frame_planned_path = stitching_trajectory + best_ref_path
     std::copy(best_ref_path.begin() + 1, best_ref_path.end(),
               std::back_inserter(current_frame_planned_path));
     frame_->set_current_frame_planned_path(current_frame_planned_path);

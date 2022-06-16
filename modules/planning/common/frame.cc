@@ -520,6 +520,7 @@ void Frame::ResetPadMsgDrivingAction() {
   pad_msg_driving_action_ = DrivingAction::NONE;
 }
 
+/* 返回cost最低的reference_line_info */
 const ReferenceLineInfo *Frame::FindDriveReferenceLineInfo() {
   double min_cost = std::numeric_limits<double>::infinity();
   drive_reference_line_info_ = nullptr;
@@ -533,6 +534,7 @@ const ReferenceLineInfo *Frame::FindDriveReferenceLineInfo() {
   return drive_reference_line_info_;
 }
 
+/* 返回IsChangeLanePath()对应的reference_line_info */
 const ReferenceLineInfo *Frame::FindTargetReferenceLineInfo() {
   const ReferenceLineInfo *target_reference_line_info = nullptr;
   for (const auto &reference_line_info : reference_line_info_) {
