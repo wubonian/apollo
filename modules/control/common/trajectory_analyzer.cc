@@ -65,13 +65,16 @@ TrajectoryAnalyzer::TrajectoryAnalyzer(
   }
 }
 
+/* 查询<x,y>对应的最近轨迹点(线性插值) */
 PathPoint TrajectoryAnalyzer::QueryMatchedPathPoint(const double x,
                                                     const double y) const {
   CHECK_GT(trajectory_points_.size(), 0U);
 
+  // 计算(x,y)与trajectory第一个点的距离
   double d_min = PointDistanceSquare(trajectory_points_.front(), x, y);
   size_t index_min = 0;
 
+  // 遍历所有轨迹点, 查询与(x,y)最近的轨迹点距离以及index
   for (size_t i = 1; i < trajectory_points_.size(); ++i) {
     double d_temp = PointDistanceSquare(trajectory_points_[i], x, y);
     if (d_temp < d_min) {
@@ -80,6 +83,7 @@ PathPoint TrajectoryAnalyzer::QueryMatchedPathPoint(const double x,
     }
   }
 
+  // 查询轨迹点最近点相邻的两个点的index <index_start, index_end>
   size_t index_start = index_min == 0 ? index_min : index_min - 1;
   size_t index_end =
       index_min + 1 == trajectory_points_.size() ? index_min : index_min + 1;
@@ -91,6 +95,7 @@ PathPoint TrajectoryAnalyzer::QueryMatchedPathPoint(const double x,
     return TrajectoryPointToPathPoint(trajectory_points_[index_start]);
   }
 
+  // 在<index_start, index_end>之间查询(x, y)对应的轨迹点
   return FindMinDistancePoint(trajectory_points_[index_start],
                               trajectory_points_[index_end], x, y);
 }
@@ -102,6 +107,7 @@ PathPoint TrajectoryAnalyzer::QueryMatchedPathPoint(const double x,
 // vector
 // (from vehicle position to ref_point position) and reference heading are
 // perpendicular.
+/* 计算自车当前位置在frenet坐标系下的 <s, s', d, d'> */
 void TrajectoryAnalyzer::ToTrajectoryFrame(const double x, const double y,
                                            const double theta, const double v,
                                            const PathPoint &ref_point,
@@ -121,7 +127,7 @@ void TrajectoryAnalyzer::ToTrajectoryFrame(const double x, const double y,
 
   // the cos of diff angle between vector (cos_ref_theta, sin_ref_theta) and
   // (dx, dy)
-  double dot_rd_nd = dx * cos_ref_theta + dy * sin_ref_theta;
+  double dot_rd_nd = dx * cos_ref_theta + dy * sin_ref_theta;   // will be zero
   *ptr_s = ref_point.s() + dot_rd_nd;
 
   double delta_theta = theta - ref_point.theta();
@@ -201,6 +207,7 @@ const std::vector<TrajectoryPoint> &TrajectoryAnalyzer::trajectory_points()
   return trajectory_points_;
 }
 
+/* 在<p0, p1>间, 通过线性插值, 对<x, y>查询对应的轨迹点 */
 PathPoint TrajectoryAnalyzer::FindMinDistancePoint(const TrajectoryPoint &p0,
                                                    const TrajectoryPoint &p1,
                                                    const double x,

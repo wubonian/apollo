@@ -80,10 +80,12 @@ Status RssDecider::Process(Frame *frame,
       continue;
     }
     const auto &obstacle_sl = obstacle->PerceptionSLBoundary();
+    // 跳过在自车后面的目标
     if (obstacle_sl.end_s() <= ego_v_s_start) {
       continue;
     }
     double distance = obstacle_sl.start_s() - ego_v_s_end;
+    // 寻找最近的前方目标
     if (distance > 0 && distance < front_obstacle_distance) {
       front_obstacle_distance = distance;
       nearest_obs_s_start = obstacle_sl.start_s();
@@ -95,6 +97,7 @@ Status RssDecider::Process(Frame *frame,
   }
 
   // there is no obstacle in front of adc
+  // 如果没有前方目标, 则设置对应的rss_limit为lon/lat最大值, 返回
   if (front_obstacle_distance >= FLAGS_rss_max_front_obstacle_distance) {
     ::ad_rss::world::Dynamics dynamics;
     rss_config_default_dynamics(&dynamics);
@@ -377,6 +380,7 @@ void RssDecider::rss_create_ego_object(::ad_rss::world::Object *ego,
   ego->responseTime = ::ad_rss::physics::Duration(1.);
 }
 
+/* 用给定veh_lon&veh_lat创建目标other */
 void RssDecider::rss_create_other_object(::ad_rss::world::Object *other,
                                          double vel_lon, double vel_lat) {
   other->objectId = 0;

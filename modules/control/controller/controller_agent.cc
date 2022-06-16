@@ -32,6 +32,7 @@ using apollo::common::ErrorCode;
 using apollo::common::Status;
 using apollo::cyber::Clock;
 
+/* 根据control_conf中的active_controllers, 在controller_factory_中注册对应的控制器 */
 void ControllerAgent::RegisterControllers(const ControlConf *control_conf) {
   AINFO << "Only support MPC controller or Lat + Lon controllers as of now";
   for (auto active_controller : control_conf->active_controllers()) {
@@ -57,6 +58,7 @@ void ControllerAgent::RegisterControllers(const ControlConf *control_conf) {
   }
 }
 
+/* 从controller_factory_中创建controller, 并维护在controller_list_中 */
 Status ControllerAgent::InitializeConf(const ControlConf *control_conf) {
   if (!control_conf) {
     AERROR << "control_conf is null";
@@ -77,11 +79,15 @@ Status ControllerAgent::InitializeConf(const ControlConf *control_conf) {
   return Status::OK();
 }
 
+/* 初始化controller */
 Status ControllerAgent::Init(std::shared_ptr<DependencyInjector> injector,
                              const ControlConf *control_conf) {
   injector_ = injector;
+  // 根据control_conf中的active_controllers, 在controller_factory_中注册对应的控制器
   RegisterControllers(control_conf);
+  // 从controller_factory_中创建controller, 并维护在controller_list_中
   ACHECK(InitializeConf(control_conf).ok()) << "Failed to initialize config.";
+  // 初始化每个controller
   for (auto &controller : controller_list_) {
     if (controller == nullptr) {
       return Status(ErrorCode::CONTROL_INIT_ERROR, "Controller is null.");
@@ -100,6 +106,7 @@ Status ControllerAgent::ComputeControlCommand(
     const localization::LocalizationEstimate *localization,
     const canbus::Chassis *chassis, const planning::ADCTrajectory *trajectory,
     control::ControlCommand *cmd) {
+  // 依次对每个controller进行计算
   for (auto &controller : controller_list_) {
     ADEBUG << "controller:" << controller->Name() << " processing ...";
     double start_timestamp = Clock::NowInSeconds();

@@ -47,9 +47,12 @@ MpcOsqp::MpcOsqp(const Eigen::MatrixXd &matrix_a,
   control_dim_ = matrix_b.cols();
   ADEBUG << "state_dim" << state_dim_;
   ADEBUG << "control_dim_" << control_dim_;
-  num_param_ = state_dim_ * (horizon_ + 1) + control_dim_ * horizon_;
+  num_param_ = state_dim_ * (horizon_ + 1) + control_dim_ * horizon_;   // total number of x for QP solver
 }
 
+/* 计算QP优化的P矩阵:
+   -> P由Q与R组成
+   -> Q对应状态向量X, R对应控制向量U */
 void MpcOsqp::CalculateKernel(std::vector<c_float> *P_data,
                               std::vector<c_int> *P_indices,
                               std::vector<c_int> *P_indptr) {
@@ -58,6 +61,7 @@ void MpcOsqp::CalculateKernel(std::vector<c_float> *P_data,
   columns.resize(num_param_);
   size_t value_index = 0;
   // state and terminal state
+  // add state x part for P matrix
   for (size_t i = 0; i <= horizon_; ++i) {
     for (size_t j = 0; j < state_dim_; ++j) {
       // (row, val)
@@ -68,6 +72,7 @@ void MpcOsqp::CalculateKernel(std::vector<c_float> *P_data,
   }
   // control
   const size_t state_total_dim = state_dim_ * (horizon_ + 1);
+  // add control u part for matrix
   for (size_t i = 0; i < horizon_; ++i) {
     for (size_t j = 0; j < control_dim_; ++j) {
       // (row, val)
@@ -92,11 +97,13 @@ void MpcOsqp::CalculateKernel(std::vector<c_float> *P_data,
 }
 
 // reference is always zero
+// gradient_ = -matrix_q_ * matrix_x_ref_
 void MpcOsqp::CalculateGradient() {
   // populate the gradient vector
   gradient_ = Eigen::VectorXd::Zero(
       state_dim_ * (horizon_ + 1) + control_dim_ * horizon_, 1);
   for (size_t i = 0; i < horizon_ + 1; i++) {
+    // 从第i*state_dim_个元素开始, 提取后续state_dim_的部分
     gradient_.block(i * state_dim_, 0, state_dim_, 1) =
         -1.0 * matrix_q_ * matrix_x_ref_;
   }
@@ -105,6 +112,7 @@ void MpcOsqp::CalculateGradient() {
 }
 
 // equality constraints x(k+1) = A*x(k)
+/* 计算QP优化的A矩阵[m, n] = [2*X+U, 2*X+U] */
 void MpcOsqp::CalculateEqualityConstraint(std::vector<c_float> *A_data,
                                           std::vector<c_int> *A_indices,
                                           std::vector<c_int> *A_indptr) {
@@ -118,6 +126,7 @@ void MpcOsqp::CalculateEqualityConstraint(std::vector<c_float> *A_data,
       state_dim_ * (horizon_ + 1), state_dim_ * (horizon_ + 1));
   ADEBUG << "state_identity_mat" << state_identity_mat;
 
+  // matrix_constraint的[state_dim_ * (horizon_ + 1), state_dim_ * (horizon_ + 1)]部分设置为负单位矩阵
   matrix_constraint.block(0, 0, state_dim_ * (horizon_ + 1),
                           state_dim_ * (horizon_ + 1)) =
       -1 * state_identity_mat;
@@ -127,6 +136,7 @@ void MpcOsqp::CalculateEqualityConstraint(std::vector<c_float> *A_data,
   Eigen::MatrixXd control_identity_mat =
       Eigen::MatrixXd::Identity(control_dim_, control_dim_);
 
+  // 设置[state_dim_, state_dim_]部分为matrix_a_
   for (size_t i = 0; i < horizon_; i++) {
     matrix_constraint.block((i + 1) * state_dim_, i * state_dim_, state_dim_,
                             state_dim_) = matrix_a_;
@@ -134,6 +144,7 @@ void MpcOsqp::CalculateEqualityConstraint(std::vector<c_float> *A_data,
   ADEBUG << "matrix_constraint with A";
   ADEBUG << matrix_constraint;
 
+  // 设置matrix_b_矩阵
   for (size_t i = 0; i < horizon_; i++) {
     matrix_constraint.block((i + 1) * state_dim_,
                             i * control_dim_ + (horizon_ + 1) * state_dim_,
@@ -154,6 +165,7 @@ void MpcOsqp::CalculateEqualityConstraint(std::vector<c_float> *A_data,
   columns.resize(num_param_ + 1);
   int value_index = 0;
   // state and terminal state
+  // 将matrix_constraint设置到columns中
   for (size_t i = 0; i < num_param_; ++i) {  // col
     for (size_t j = 0; j < num_param_ + state_dim_ * (horizon_ + 1);
          ++j)  // row
@@ -177,12 +189,14 @@ void MpcOsqp::CalculateEqualityConstraint(std::vector<c_float> *A_data,
   A_indptr->emplace_back(ind_A);
 }
 
+/* 为<X, X, u>计算生成上下边界lowerBound_, upperBound_ */
 void MpcOsqp::CalculateConstraintVectors() {
   // evaluate the lower and the upper inequality vectors
   Eigen::VectorXd lowerInequality = Eigen::MatrixXd::Zero(
       state_dim_ * (horizon_ + 1) + control_dim_ * horizon_, 1);
   Eigen::VectorXd upperInequality = Eigen::MatrixXd::Zero(
       state_dim_ * (horizon_ + 1) + control_dim_ * horizon_, 1);
+  // 更新控制的上下边界
   for (size_t i = 0; i < horizon_; i++) {
     lowerInequality.block(control_dim_ * i + state_dim_ * (horizon_ + 1), 0,
                           control_dim_, 1) = matrix_u_lower_;
@@ -190,6 +204,8 @@ void MpcOsqp::CalculateConstraintVectors() {
                           control_dim_, 1) = matrix_u_upper_;
   }
   ADEBUG << " matrix_u_lower_";
+
+  // 更新状态变量的上下边界
   for (size_t i = 0; i < horizon_ + 1; i++) {
     lowerInequality.block(state_dim_ * i, 0, state_dim_, 1) = matrix_x_lower_;
     upperInequality.block(state_dim_ * i, 0, state_dim_, 1) = matrix_x_upper_;
@@ -197,6 +213,7 @@ void MpcOsqp::CalculateConstraintVectors() {
   ADEBUG << " matrix_x_lower_";
 
   // evaluate the lower and the upper equality vectors
+  // 将初始状态向量塞进lowerEquality与upperEquality中
   Eigen::VectorXd lowerEquality =
       Eigen::MatrixXd::Zero(state_dim_ * (horizon_ + 1), 1);
   Eigen::VectorXd upperEquality;
@@ -206,6 +223,7 @@ void MpcOsqp::CalculateConstraintVectors() {
   ADEBUG << " matrix_initial_x_";
 
   // merge inequality and equality vectors
+  // 用<lowerInequality, upperInequality>与<lowerEquality, upperEquality>生成上下边界<lowerBound_, upperBound_>
   lowerBound_ = Eigen::MatrixXd::Zero(
       2 * state_dim_ * (horizon_ + 1) + control_dim_ * horizon_, 1);
   lowerBound_ << lowerEquality, lowerInequality;
@@ -216,6 +234,7 @@ void MpcOsqp::CalculateConstraintVectors() {
   ADEBUG << " upperBound_";
 }
 
+/* 设置OSQP求解器 */
 OSQPSettings *MpcOsqp::Settings() {
   // default setting
   OSQPSettings *settings =
@@ -233,6 +252,8 @@ OSQPSettings *MpcOsqp::Settings() {
   }
 }
 
+/* setup OSQP problem:
+   -> Q, P, A, l, u */
 OSQPData *MpcOsqp::Data() {
   OSQPData *data = reinterpret_cast<OSQPData *>(c_malloc(sizeof(OSQPData)));
   size_t kernel_dim = state_dim_ * (horizon_ + 1) + control_dim_ * horizon_;
@@ -247,17 +268,22 @@ OSQPData *MpcOsqp::Data() {
     std::vector<c_int> P_indices;
     std::vector<c_int> P_indptr;
     ADEBUG << "before CalculateKernel";
+    // 计算QP优化的P矩阵
     CalculateKernel(&P_data, &P_indices, &P_indptr);
     ADEBUG << "CalculateKernel done";
+    // 由CalculateKernel()计算结果设置P矩阵: data->P
     data->P =
         csc_matrix(kernel_dim, kernel_dim, P_data.size(), CopyData(P_data),
                    CopyData(P_indices), CopyData(P_indptr));
     ADEBUG << "Get P matrix";
+    // 由gradient_设置Q矩阵: data->q
     data->q = gradient_.data();
     ADEBUG << "before CalculateEqualityConstraint";
     std::vector<c_float> A_data;
     std::vector<c_int> A_indices;
     std::vector<c_int> A_indptr;
+    // 计算QP优化的A矩阵, l <= A*X <= u
+    // 设置A, l, u
     CalculateEqualityConstraint(&A_data, &A_indices, &A_indptr);
     ADEBUG << "CalculateEqualityConstraint done";
     data->A =
@@ -279,12 +305,24 @@ void MpcOsqp::FreeData(OSQPData *data) {
 }
 
 bool MpcOsqp::Solve(std::vector<double> *control_cmd) {
+  // MPC QP问题的构建 - equation list:
+  // 以下等式与不等式会构成QP问题的A矩阵
+  // -> matrix_a_ * X[i] + matrix_b_ * U[i] - X[i+1] = 0
+  // -> X[0] = X_init
+  // -> l_x <= X[i] <= u_x
+  // -> l_u <= U[i] <= u_u
+  // 以下评价函数会构成QP问题的P与q矩阵:
+  // J = 1/2*X*matrix_q_*X - matrix_q_*matrix_x_ref_ + 1/2*matrix_x_ref_*matrix_x_ref_ + 1/2*U*matrix_r_*U
+  //   = 1/2*matrix_q_*(X - matrix_x_ref_)^2 + 1/2*U*matrix_r_*U
   ADEBUG << "Before Calc Gradient";
+  // 计算生成梯度矩阵gradient_
   CalculateGradient();
   ADEBUG << "After Calc Gradient";
+  // 计算生成上下边界<lowerBound_, upperBound_>
   CalculateConstraintVectors();
   ADEBUG << "MPC2Matrix";
 
+  // 设置QP求解的Q, P, A, l, u矩阵
   OSQPData *data = Data();
   ADEBUG << "OSQP data done";
   ADEBUG << "OSQP data n" << data->n;
@@ -305,8 +343,10 @@ bool MpcOsqp::Solve(std::vector<double> *control_cmd) {
   ADEBUG << "OSQP setting done";
   OSQPWorkspace *osqp_workspace = nullptr;
   // osqp_setup(&osqp_workspace, data, settings);
+  // setup osqp问题
   osqp_workspace = osqp_setup(data, settings);
   ADEBUG << "OSQP workspace ready";
+  // osqp求解
   osqp_solve(osqp_workspace);
 
   auto status = osqp_workspace->info->status_val;

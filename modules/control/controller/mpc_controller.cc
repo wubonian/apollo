@@ -70,6 +70,7 @@ MPCController::MPCController() : name_("MPC Controller") {
 
 MPCController::~MPCController() { CloseLogFile(); }
 
+/* 读取控制的配置control_conf */
 bool MPCController::LoadControlConf(const ControlConf *control_conf) {
   if (!control_conf) {
     AERROR << "[MPCController] control_conf = nullptr";
@@ -168,6 +169,7 @@ void MPCController::InitializeFilters(const ControlConf *control_conf) {
       control_conf->mpc_controller_conf().mean_filter_window_size()));
 }
 
+/* 初始化MPC控制器 */
 Status MPCController::Init(std::shared_ptr<DependencyInjector> injector,
                            const ControlConf *control_conf) {
   if (!LoadControlConf(control_conf)) {
@@ -247,6 +249,7 @@ void MPCController::CloseLogFile() {
   }
 }
 
+/* 从前轮转角返回目标方向盘角度 */
 double MPCController::Wheel2SteerPct(const double wheel_angle) {
   return wheel_angle / wheel_single_direction_max_degree_ * 100;
 }
@@ -297,28 +300,40 @@ void MPCController::LoadMPCGainScheduler(
       << "Fail to load steer weight gain scheduler for MPC controller";
 }
 
+/* MPC controller主程序 */
 Status MPCController::ComputeControlCommand(
     const localization::LocalizationEstimate *localization,
     const canbus::Chassis *chassis,
     const planning::ADCTrajectory *planning_published_trajectory,
     ControlCommand *cmd) {
+  // 将输入的trajectory注入到trajectory_analyzer_中
+  // trajectory_analyzer_作为后续控制计算的轨迹输入
   trajectory_analyzer_ =
       std::move(TrajectoryAnalyzer(planning_published_trajectory));
 
   SimpleMPCDebug *debug = cmd->mutable_debug()->mutable_simple_mpc_debug();
   debug->Clear();
 
+  // 计算纵向的控制变量 (reference point选择为当前时刻对应的轨迹点)
+  // -> reference: s, v, a, jerk
+  // -> feedback: s, v, a, jerk
+  // -> error: s, v, a, jerk
   ComputeLongitudinalErrors(&trajectory_analyzer_, debug);
 
   // Update state
+  // 计算横向控制变量(d, heading), 设置状态向量matrix_state_ = {d, d', h, h', s, s'}
   UpdateState(debug);
 
+  // 更新状态方程相关矩阵matrix_a_, matrix_c_, matrix_ad_, matrix_cd_
   UpdateMatrix(debug);
 
+  // 由参考点的曲率, 与自行车模型, 计算目标方向盘角度的前馈分量steer_angle_feedforwardterm_
   FeedforwardUpdate(debug);
 
   auto vehicle_state = injector_->vehicle_state();
   // Add gain scheduler for higher speed steering
+  // 计算更新过后的matrix_q_updated_, matrix_r_updated_, steer_angle_feedforwardterm_updated_
+  // 用于后续使用
   if (FLAGS_enable_gain_scheduler) {
     matrix_q_updated_(0, 0) =
         matrix_q_(0, 0) *
@@ -339,6 +354,7 @@ Status MPCController::ComputeControlCommand(
     steer_angle_feedforwardterm_updated_ = steer_angle_feedforwardterm_;
   }
 
+  // 将Q与R放入debug中
   debug->add_matrix_q_updated(matrix_q_updated_(0, 0));
   debug->add_matrix_q_updated(matrix_q_updated_(1, 1));
   debug->add_matrix_q_updated(matrix_q_updated_(2, 2));
@@ -347,8 +363,8 @@ Status MPCController::ComputeControlCommand(
   debug->add_matrix_r_updated(matrix_r_updated_(0, 0));
   debug->add_matrix_r_updated(matrix_r_updated_(1, 1));
 
-  Matrix control_matrix = Matrix::Zero(controls_, 1);
-  std::vector<Matrix> control(horizon_, control_matrix);
+  Matrix control_matrix = Matrix::Zero(controls_, 1);   // controls_ = 2
+  std::vector<Matrix> control(horizon_, control_matrix);    // horizon_ = 10
 
   Matrix control_gain_matrix = Matrix::Zero(controls_, basic_state_size_);
   std::vector<Matrix> control_gain(horizon_, control_gain_matrix);
@@ -356,21 +372,22 @@ Status MPCController::ComputeControlCommand(
   Matrix addition_gain_matrix = Matrix::Zero(controls_, 1);
   std::vector<Matrix> addition_gain(horizon_, addition_gain_matrix);
 
-  Matrix reference_state = Matrix::Zero(basic_state_size_, 1);
+  Matrix reference_state = Matrix::Zero(basic_state_size_, 1);    // basic_state_size_ = 6
   std::vector<Matrix> reference(horizon_, reference_state);
 
-  Matrix lower_bound(controls_, 1);
+  Matrix lower_bound(controls_, 1);     // lower control command bound: <min_steer_angle, min_acceleration>
   lower_bound << -wheel_single_direction_max_degree_, max_deceleration_;
 
-  Matrix upper_bound(controls_, 1);
+  Matrix upper_bound(controls_, 1);     // upper control command bound: <max_steer_angle, max_acceleration>
   upper_bound << wheel_single_direction_max_degree_, max_acceleration_;
 
   const double max = std::numeric_limits<double>::max();
-  Matrix lower_state_bound(basic_state_size_, 1);
-  Matrix upper_state_bound(basic_state_size_, 1);
+  Matrix lower_state_bound(basic_state_size_, 1);     // lower state bound
+  Matrix upper_state_bound(basic_state_size_, 1);     // upper state bound
 
   // lateral_error, lateral_error_rate, heading_error, heading_error_rate
   // station_error, station_error_rate
+  // 看起来并没有给状态向量叠加任何有效的bound
   lower_state_bound << -1.0 * max, -1.0 * max, -1.0 * M_PI, -1.0 * max,
       -1.0 * max, -1.0 * max;
   upper_state_bound << max, max, M_PI, max, max, max;
@@ -386,11 +403,30 @@ Status MPCController::ComputeControlCommand(
 
   std::vector<double> control_cmd(controls_, 0);
 
+  // following input are used for initialize MPC solver
+  // -> <A, B, Q, R>: <matrix_ad_, matrix_bd_, matrix_q_updated_, matrix_r_updated_>
+  // -> X: matrix_state_
+  // -> <matrix_u_lower, matrix_u_upper, matrix_x_lower, matrix_x_upper>: 
+  //    <lower_bound, upper_bound, lower_state_bound, upper_state_bound>
+  // -> matrix_x_ref: reference_state
   apollo::common::math::MpcOsqp mpc_osqp(
       matrix_ad_, matrix_bd_, matrix_q_updated_, matrix_r_updated_,
       matrix_state_, lower_bound, upper_bound, lower_state_bound,
       upper_state_bound, reference_state, mpc_max_iteration_, horizon_,
       mpc_eps_);
+  // 状态向量:
+  // X = <lateral_error, lateral_error_rate, heading_error, heading_error_rate, station_error, station_error_rate>
+  // U = <steer_cmd, accel_cmd>
+
+  // MPC QP问题的构建 - equation list:
+  // -> 以下等式与不等式会构成QP问题的A矩阵
+  //    -> matrix_a_ * X[i] + matrix_b_ * U[i] - X[i+1] = 0
+  //    -> X[0] = X_init
+  //    -> l_x <= X[i] <= u_x
+  //    -> l_u <= U[i] <= u_u
+  // -> 以下评价函数会构成QP问题的P与q矩阵:
+  //    -> J = 1/2*X*matrix_q_*X - matrix_q_*matrix_x_ref_ + 1/2*matrix_x_ref_*matrix_x_ref_ + 1/2*U*matrix_r_*U
+  //         = 1/2*matrix_q_*(X - matrix_x_ref_)^2 + 1/2*U*matrix_r_*U
   if (!mpc_osqp.Solve(&control_cmd)) {
     AERROR << "MPC OSQP solver failed";
   } else {
@@ -399,12 +435,18 @@ Status MPCController::ComputeControlCommand(
     control[0](1, 0) = control_cmd.at(1);
   }
 
+  // 提取steer-angle
   steer_angle_feedback = Wheel2SteerPct(control[0](0, 0));
+  // 提取加速度请求值
   acc_feedback = control[0](1, 0);
+  // unconstrained_control (steer_angle) = kp * {d, d', h, h', s, s'} error
   for (int i = 0; i < basic_state_size_; ++i) {
     unconstrained_control += control_gain[0](0, i) * matrix_state_(i, 0);
   }
+  // unconstrained_control (steer_angle) += kp * v * crvt
   unconstrained_control += addition_gain[0](0, 0) * v * debug->curvature();
+  
+  // calculate feedforward term
   if (enable_mpc_feedforward_compensation_) {
     unconstrained_control_diff =
         Wheel2SteerPct(control[0](0, 0) - unconstrained_control);
@@ -433,6 +475,7 @@ Status MPCController::ComputeControlCommand(
          << (mpc_end_timestamp - mpc_start_timestamp) * 1000 << " ms.";
 
   // TODO(QiL): evaluate whether need to add spline smoothing after the result
+  // steer_angle = feedback + feedforward
   double steer_angle = steer_angle_feedback +
                        steer_angle_feedforwardterm_updated_ +
                        steer_angle_ff_compensation;
@@ -458,9 +501,11 @@ Status MPCController::ComputeControlCommand(
 
   debug->set_acceleration_cmd_closeloop(acc_feedback);
 
+  // feedforward + feedback
   double acceleration_cmd = acc_feedback + debug->acceleration_reference();
   // TODO(QiL): add pitch angle feed forward to accommodate for 3D control
 
+  // standstill acceleration
   if ((planning_published_trajectory->trajectory_type() ==
        apollo::planning::ADCTrajectory::NORMAL) &&
       (std::fabs(debug->acceleration_reference()) <=
@@ -488,6 +533,7 @@ Status MPCController::ComputeControlCommand(
 
   debug->set_calibration_value(calibration_value);
 
+  // convert acceleration command to throttle_cmd & brake_cmd
   double throttle_cmd = 0.0;
   double brake_cmd = 0.0;
   if (calibration_value >= 0) {
@@ -498,6 +544,7 @@ Status MPCController::ComputeControlCommand(
     brake_cmd = std::max(-calibration_value, brake_lowerbound_);
   }
 
+  // set steering_rate limit
   cmd->set_steering_rate(FLAGS_steer_angle_rate);
   // if the car is driven by acceleration, disgard the cmd->throttle and brake
   cmd->set_throttle(throttle_cmd);
@@ -548,8 +595,16 @@ void MPCController::LoadControlCalibrationTable(
       << "Fail to load control calibration table";
 }
 
+/* 计算横向控制变量(d, heading), 设置状态向量X = matrix_state_ = {d, d', h, h', s, s'} */
 void MPCController::UpdateState(SimpleMPCDebug *debug) {
   const auto &com = injector_->vehicle_state()->ComputeCOMPosition(lr_);
+  // 计算横向的控制变量:
+  // -> d: error, error_rate, acceleration, jerk
+  // -> heading: reference, error, error_rate, acceleration, jerk
+  // -> heading_rate: current, reference
+  // -> heading_acceleration: current, reference
+  // -> heading_jerk: current, reference
+  // -> curvature: reference
   ComputeLateralErrors(com.x(), com.y(), injector_->vehicle_state()->heading(),
                        injector_->vehicle_state()->linear_velocity(),
                        injector_->vehicle_state()->angular_velocity(),
@@ -565,6 +620,7 @@ void MPCController::UpdateState(SimpleMPCDebug *debug) {
   matrix_state_(5, 0) = debug->speed_error();
 }
 
+/* 更新状态方程相关矩阵matrix_a_, matrix_c_, matrix_ad_, matrix_cd_ */
 void MPCController::UpdateMatrix(SimpleMPCDebug *debug) {
   const double v = std::max(injector_->vehicle_state()->linear_velocity(),
                             minimum_speed_protection_);
@@ -582,6 +638,7 @@ void MPCController::UpdateMatrix(SimpleMPCDebug *debug) {
   matrix_cd_ = matrix_c_ * debug->ref_heading_rate() * ts_;
 }
 
+/* 使用自行车模型与参考点的曲率, 估算控制的前馈量 -> 目标方向盘角度steer_angle_feedforwardterm_ */
 void MPCController::FeedforwardUpdate(SimpleMPCDebug *debug) {
   const double v = injector_->vehicle_state()->linear_velocity();
   const double kv =
@@ -590,10 +647,18 @@ void MPCController::FeedforwardUpdate(SimpleMPCDebug *debug) {
       wheelbase_ * debug->curvature() + kv * v * v * debug->curvature());
 }
 
+/* 计算横向的控制变量:
+   -> d: error, error_rate, acceleration, jerk
+   -> heading: reference, error, error_rate, acceleration, jerk
+   -> heading_rate: current, reference
+   -> heading_acceleration: current, reference
+   -> heading_jerk: current, reference
+   -> curvature: reference */
 void MPCController::ComputeLateralErrors(
     const double x, const double y, const double theta, const double linear_v,
     const double angular_v, const double linear_a,
     const TrajectoryAnalyzer &trajectory_analyzer, SimpleMPCDebug *debug) {
+  // 计算<x, y>对应的轨迹点
   const auto matched_point =
       trajectory_analyzer.QueryNearestPointByPosition(x, y);
 
@@ -659,6 +724,10 @@ void MPCController::ComputeLateralErrors(
   previous_ref_heading_acceleration_ = debug->ref_heading_acceleration();
 }
 
+/* 计算纵向的控制变量 (reference point选择为当前时刻对应的轨迹点)
+   -> reference: s, v, a, jerk
+   -> feedback: s, v, a, jerk
+   -> error: s, v, a, jerk */
 void MPCController::ComputeLongitudinalErrors(
     const TrajectoryAnalyzer *trajectory_analyzer, SimpleMPCDebug *debug) {
   // the decomposed vehicle motion onto Frenet frame
@@ -671,9 +740,12 @@ void MPCController::ComputeLongitudinalErrors(
   double d_matched = 0.0;
   double d_dot_matched = 0.0;
 
+  // find relevant point of ego vehicle on planned trajectory
+  // 查询自车位置<x, y>对应的最近轨迹点
   const auto matched_point = trajectory_analyzer->QueryMatchedPathPoint(
       injector_->vehicle_state()->x(), injector_->vehicle_state()->y());
 
+  // 计算当前自车位置在frenet坐标系下的<s, s', d, d'> = <s_matched, s_dot_matched, d_matched, d_dot_matched>
   trajectory_analyzer->ToTrajectoryFrame(
       injector_->vehicle_state()->x(), injector_->vehicle_state()->y(),
       injector_->vehicle_state()->heading(),
@@ -682,6 +754,7 @@ void MPCController::ComputeLongitudinalErrors(
 
   const double current_control_time = Clock::NowInSeconds();
 
+  // 计算当前时刻对应trajectory上的轨迹点
   TrajectoryPoint reference_point =
       trajectory_analyzer->QueryNearestPointByAbsoluteTime(
           current_control_time);
@@ -691,6 +764,7 @@ void MPCController::ComputeLongitudinalErrors(
 
   const double linear_v = injector_->vehicle_state()->linear_velocity();
   const double linear_a = injector_->vehicle_state()->linear_acceleration();
+  // 自车与对应轨迹点的heading_error
   double heading_error = common::math::NormalizeAngle(
       injector_->vehicle_state()->heading() - matched_point.theta());
   double lon_speed = linear_v * std::cos(heading_error);
@@ -698,6 +772,12 @@ void MPCController::ComputeLongitudinalErrors(
   double one_minus_kappa_lat_error = 1 - reference_point.path_point().kappa() *
                                              linear_v * std::sin(heading_error);
 
+  // 设置以下control相关的信息
+  // reference point选取为当前时刻对应的轨迹点
+  // s: reference, feedback, error
+  // v: reference, feedback, error
+  // a: reference, feedback, error
+  // jerk: reference, feedback, error
   debug->set_station_reference(reference_point.path_point().s());
   debug->set_station_feedback(s_matched);
   debug->set_station_error(reference_point.path_point().s() - s_matched);

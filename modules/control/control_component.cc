@@ -158,8 +158,10 @@ void ControlComponent::OnMonitor(
   }
 }
 
+/* 计算control_command */
 Status ControlComponent::ProduceControlCommand(
     ControlCommand *control_command) {
+  // 对输入的local_view_信息进行检查, 同时更新localization与chassis信息到injector_中
   Status status = CheckInput(&local_view_);
   // check data
 
@@ -172,7 +174,10 @@ Status ControlComponent::ProduceControlCommand(
         status.error_message());
     estop_ = true;
     estop_reason_ = status.error_message();
-  } else {
+  } 
+  // 如果检查结果ok
+  else {
+    // 检查输入的chassis/localization/trajectory信息是否延时过大
     Status status_ts = CheckTimestamp(local_view_);
     if (!status_ts.ok()) {
       AERROR << "Input messages timeout";
@@ -185,7 +190,9 @@ Status ControlComponent::ProduceControlCommand(
         control_command->mutable_engage_advice()->set_reason(
             status.error_message());
       }
-    } else {
+    } 
+    // 如果通过input validity && latency检查, 则设置为可以工作状态
+    else {
       control_command->mutable_engage_advice()->set_advice(
           apollo::common::EngageAdvice::READY_TO_ENGAGE);
     }
@@ -202,6 +209,7 @@ Status ControlComponent::ProduceControlCommand(
     estop_reason_ += local_view_.trajectory().estop().reason();
   }
 
+  // trajectory exists check
   if (local_view_.trajectory().trajectory_point().empty()) {
     AWARN_EVERY(100) << "planning has no trajectory point. ";
     estop_ = true;
@@ -209,6 +217,7 @@ Status ControlComponent::ProduceControlCommand(
                     local_view_.trajectory().header().ShortDebugString();
   }
 
+  // 不允许D档给出负的速度
   if (FLAGS_enable_gear_drive_negative_speed_protection) {
     const double kEpsilon = 0.001;
     auto first_trajectory_point = local_view_.trajectory().trajectory_point(0);
@@ -241,6 +250,7 @@ Status ControlComponent::ProduceControlCommand(
           latest_replan_trajectory_header_);
     }
     // controller agent
+    // compute control command
     Status status_compute = controller_agent_.ComputeControlCommand(
         &local_view_.localization(), &local_view_.chassis(),
         &local_view_.trajectory(), control_command);
@@ -276,6 +286,7 @@ Status ControlComponent::ProduceControlCommand(
   return status;
 }
 
+/* control module的入口函数 */
 bool ControlComponent::Proc() {
   const auto start_time = Clock::Now();
 
@@ -312,6 +323,7 @@ bool ControlComponent::Proc() {
 
   {
     // TODO(SHU): to avoid redundent copy
+    // 将输入的chassis, trajectory, localization信息导入到local_view_中
     std::lock_guard<std::mutex> lock(mutex_);
     local_view_.mutable_chassis()->CopyFrom(latest_chassis_);
     local_view_.mutable_trajectory()->CopyFrom(latest_trajectory_);
@@ -364,6 +376,7 @@ bool ControlComponent::Proc() {
 
   ControlCommand control_command;
 
+  // 主执行函数, 返回control_command
   Status status = ProduceControlCommand(&control_command);
   AERROR_IF(!status.ok()) << "Failed to produce control command:"
                           << status.error_message();
@@ -417,11 +430,13 @@ bool ControlComponent::Proc() {
   return true;
 }
 
+/* 对输入的local_view中的数据进行检查, 同时将localization与chassis信息更新到injector中 */
 Status ControlComponent::CheckInput(LocalView *local_view) {
   ADEBUG << "Received localization:"
          << local_view->localization().ShortDebugString();
   ADEBUG << "Received chassis:" << local_view->chassis().ShortDebugString();
 
+  // if there is no trajectory point
   if (!local_view->trajectory().estop().is_estop() &&
       local_view->trajectory().trajectory_point().empty()) {
     AWARN_EVERY(100) << "planning has no trajectory point. ";
@@ -431,6 +446,7 @@ Status ControlComponent::CheckInput(LocalView *local_view) {
     return Status(ErrorCode::CONTROL_COMPUTE_ERROR, msg);
   }
 
+  // 将速度过低的点的速度/加速度设置为0
   for (auto &trajectory_point :
        *local_view->mutable_trajectory()->mutable_trajectory_point()) {
     if (std::abs(trajectory_point.v()) <
@@ -442,12 +458,14 @@ Status ControlComponent::CheckInput(LocalView *local_view) {
     }
   }
 
+  // 将输入的local_view->localization/chassis信息, 更新到injector_中
   injector_->vehicle_state()->Update(local_view->localization(),
                                      local_view->chassis());
 
   return Status::OK();
 }
 
+/* 检查输入的chassis/localization/trajectory信息是否延迟过大 */
 Status ControlComponent::CheckTimestamp(const LocalView &local_view) {
   if (!control_conf_.enable_input_timestamp_check() ||
       control_conf_.is_control_test_mode()) {
